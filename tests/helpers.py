@@ -4,7 +4,9 @@ The scripts live in the skill root, not in a package, so the root goes on
 sys.path here — every test module imports this first.
 """
 
+import contextlib
 import http.client
+import io
 import json
 import pathlib
 import re
@@ -22,6 +24,9 @@ import serve  # noqa: E402
 LANG = "en"
 # Port 0 lets the OS pick a free one, so tests never fight a running checklist.
 EPHEMERAL_PORT = 0
+# shutdown() waits for serve_forever's next poll; the default half second, paid
+# by every test that starts a server, was most of the suite's run time.
+SERVE_POLL = 0.05
 STATE_RE = re.compile(r'<script type="application/json" id="state">(.*?)</script>', re.S)
 
 
@@ -52,6 +57,18 @@ def read_json(path: pathlib.Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def run_quietly(call) -> tuple:
+    """`call()` with stderr caught: (its result, what it wrote there)."""
+    captured = io.StringIO()
+    with contextlib.redirect_stderr(captured):
+        result = call()
+    return result, captured.getvalue()
+
+
+def stderr_of(call) -> str:
+    return run_quietly(call)[1]
+
+
 class Folder:
     """A temp working folder; `cleanup()` removes it."""
 
@@ -72,7 +89,8 @@ class RunningServer:
         handler.log_message = lambda *_: None      # keep the test output readable
         self.server, _ = serve.listen(EPHEMERAL_PORT, 1, handler)
         self.port = self.server.server_address[1]
-        self._thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self._thread = threading.Thread(target=self.server.serve_forever,
+                                        kwargs={"poll_interval": SERVE_POLL}, daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
@@ -119,23 +137,20 @@ class RunningServer:
         return self.request("PUT", "/state", json.dumps(state).encode("utf-8"),
                             {"Content-Type": "application/json"})
 
+    def post(self, route: str, payload: dict, headers: dict | None = None):
+        """POST /<route>; `headers` replaces the guard header the page sends."""
+        sent = {"Content-Type": "application/json",
+                **({"X-Checklist": route} if headers is None else headers)}
+        return self.request("POST", f"/{route}", json.dumps(payload).encode("utf-8"), sent)
+
     def reveal(self, path: str):
-        return self.request("POST", "/reveal", json.dumps({"path": path}).encode("utf-8"),
-                            {"Content-Type": "application/json", "X-Checklist": "reveal"})
+        return self.post("reveal", {"path": path})
 
     def reset(self, setup_id: str, headers: dict | None = None):
-        """POST /reset; `headers` replaces the guard header the page sends."""
-        sent = {"Content-Type": "application/json",
-                **({"X-Checklist": "reset"} if headers is None else headers)}
-        return self.request("POST", "/reset", json.dumps({"setup": setup_id}).encode("utf-8"),
-                            sent)
+        return self.post("reset", {"setup": setup_id}, headers)
 
     def launch(self, setup_id: str, headers: dict | None = None):
-        """POST /launch; `headers` replaces the guard header the page sends."""
-        sent = {"Content-Type": "application/json",
-                **({"X-Checklist": "launch"} if headers is None else headers)}
-        return self.request("POST", "/launch", json.dumps({"setup": setup_id}).encode("utf-8"),
-                            sent)
+        return self.post("launch", {"setup": setup_id}, headers)
 
     def launch_status(self, setup_id: str) -> tuple[int, dict | bytes]:
         """GET /launch; the parsed JSON on 200, the raw body otherwise."""

@@ -239,7 +239,7 @@
   }
   .launch button:hover { background: var(--accent); color: var(--surface); }
   .launch button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
-  .launch button[disabled] { opacity: .5; cursor: default; }
+  .launch button[disabled], .setup-path button[disabled] { opacity: .5; cursor: default; }
   .launch-status { font-size: 12.5px; color: var(--ink-soft); }
   .launch-status[data-phase="failed"] { color: var(--problem); }
   .launch-status[data-phase="running"],
@@ -270,7 +270,6 @@
     color: var(--ink-faint); user-select: all;
   }
   .setup-path .said { font-size: 13px; color: var(--problem); }
-  .setup-path button[disabled] { opacity: .5; cursor: default; }
   /* A setup's files: what a test reads, with what an editor hides spelled out —
      encoding, byte order mark, line ends, the missing last newline. */
   .setup-file code.file-name { color: var(--ink); }
@@ -614,16 +613,22 @@
     return row;
   }
 
+  // Every mutating POST names its route in X-Checklist, so the header sent for
+  // one action never passes for another.
+  function post(route, body) {
+    return fetch(route, {
+      method: "POST",
+      headers: { "content-type": "application/json", "X-Checklist": route },
+      body: JSON.stringify(body),
+    });
+  }
+
   // A file: link would be dead from an http page; the server does it instead.
   // Whatever goes wrong is said in `said`.
   async function reveal(path, said) {
     said.textContent = "";
     try {
-      const res = await fetch("reveal", {
-        method: "POST",
-        headers: { "content-type": "application/json", "X-Checklist": "reveal" },
-        body: JSON.stringify({ path }),
-      });
+      const res = await post("reveal", { path });
       if (!res.ok) said.textContent = await res.text();
     } catch {
       said.textContent = "{{t.server_not_answering}}";
@@ -777,11 +782,7 @@
       said.textContent = "";
       btn.disabled = true;
       try {
-        const res = await fetch("reset", {
-          method: "POST",
-          headers: { "content-type": "application/json", "X-Checklist": "reset" },
-          body: JSON.stringify({ setup: setupId }),
-        });
+        const res = await post("reset", { setup: setupId });
         if (!res.ok) {
           said.textContent = await res.text();
           return;
@@ -853,23 +854,19 @@
   async function startLaunch(setupId, view) {
     pressedView = view;
     view.button.disabled = true;
+    let problem = null;
     try {
-      const res = await fetch("launch", {
-        method: "POST",
-        headers: { "content-type": "application/json", "X-Checklist": "launch" },
-        body: JSON.stringify({ setup: setupId }),
-      });
-      if (!res.ok) {
-        sayLaunch(view, res.status === 409 ? "{{t.launch_busy}}" : await res.text(), "failed");
-        view.button.disabled = false;
-        return;
-      }
+      const res = await post("launch", { setup: setupId });
+      if (!res.ok) problem = res.status === 409 ? "{{t.launch_busy}}" : await res.text();
     } catch {
-      sayLaunch(view, "{{t.server_not_answering}}", "failed");
-      view.button.disabled = false;
+      problem = "{{t.server_not_answering}}";
+    }
+    if (problem === null) {
+      followLaunch(setupId);
       return;
     }
-    followLaunch(setupId);
+    sayLaunch(view, problem, "failed");
+    view.button.disabled = false;
   }
 
   // ▶ and its status sit in the summary row. A click there would also fold

@@ -1,14 +1,12 @@
 """Named setups, launch config, project config, language and rebuild protection."""
 
-import contextlib
 import copy
-import io
 import json
 import pathlib
 import tempfile
 import unittest
 
-from helpers import Folder, build, build_into, read_json, sample_spec
+from helpers import Folder, build, build_into, read_json, run_quietly, sample_spec, stderr_of
 
 import read
 
@@ -26,13 +24,6 @@ def named_spec() -> dict:
             {"title": "D"},
         ],
     }
-
-
-def stderr_of(call) -> str:
-    captured = io.StringIO()
-    with contextlib.redirect_stderr(captured):
-        call()
-    return captured.getvalue()
 
 
 class NamedSetupTest(unittest.TestCase):
@@ -92,8 +83,7 @@ class NamedSetupTest(unittest.TestCase):
     def test_unused_named_setup_stays_out_of_resolved(self):
         spec = named_spec()
         spec["setups"]["spare"] = {"paths": ["/tmp/spare"]}
-        with contextlib.redirect_stderr(io.StringIO()):
-            _, frozen = self.document(spec)
+        (_, frozen), _ = run_quietly(lambda: self.document(spec))
         self.assertNotIn("spare", frozen["setups"])
         self.assertIn("spare", frozen["source"]["setups"])
 
@@ -105,13 +95,10 @@ class NamedSetupTest(unittest.TestCase):
 
 class LaunchTest(unittest.TestCase):
     def setUp(self):
-        self._temp = tempfile.TemporaryDirectory()
+        temp = self.enterContext(tempfile.TemporaryDirectory())
         # A space in the path proves {data} is quoted in commands.
-        self.folder = pathlib.Path(self._temp.name).resolve() / "with space" / "checklist"
+        self.folder = pathlib.Path(temp).resolve() / "with space" / "checklist"
         self.data = self.folder / "data"
-
-    def tearDown(self):
-        self._temp.cleanup()
 
     def resolved(self, setup_launch=None, spec_launch=None, project_launch=None):
         """The launch the single item's setup ends up with."""
@@ -226,14 +213,11 @@ class ProfileTest(unittest.TestCase):
                         "editor": {"run": "open -a Editor"}}
 
     def setUp(self):
-        self._temp = tempfile.TemporaryDirectory()
-        self.folder = pathlib.Path(self._temp.name).resolve() / "checklist"
+        temp = self.enterContext(tempfile.TemporaryDirectory())
+        self.folder = pathlib.Path(temp).resolve() / "checklist"
         self.project = build.Project(root=pathlib.Path("/project"),
                                      launch={"quit": "pkill App", "build": "make"},
                                      lang=None, launches=self.PROJECT_LAUNCHES)
-
-    def tearDown(self):
-        self._temp.cleanup()
 
     def document(self, setup_launch, spec_extra=None):
         spec = {"items": [{"title": "A", "setup": {"text": "x", "launch": setup_launch}}],
@@ -302,14 +286,10 @@ class ProfileTest(unittest.TestCase):
 
 class ProjectConfigTest(unittest.TestCase):
     def setUp(self):
-        self._temp = tempfile.TemporaryDirectory()
-        self.top = pathlib.Path(self._temp.name).resolve()
+        self.top = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
         self.repo = self.top / "repo"
         self.start = self.repo / "sub" / ".manual-tests"
         self.start.mkdir(parents=True)
-
-    def tearDown(self):
-        self._temp.cleanup()
 
     def config(self, where: pathlib.Path, content: dict) -> None:
         (where / build.PROJECT_CONFIG).write_text(json.dumps(content), encoding="utf-8")

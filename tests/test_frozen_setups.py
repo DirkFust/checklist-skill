@@ -1,14 +1,13 @@
 """Setups are frozen at build time; the page can neither invent nor change them."""
 
-import contextlib
 import copy
-import io
 import json
 import pathlib
 import tempfile
 import unittest
 
-from helpers import Folder, RunningServer, build, build_into, read_json, sample_spec, serve
+from helpers import (Folder, RunningServer, build, build_into, read_json, run_quietly,
+                     sample_spec, serve)
 
 import read
 
@@ -189,12 +188,10 @@ class OldFolderTest(unittest.TestCase):
         state = read_json(self.folder.path / "state.json")
         state["items"][1]["setup"] = {"text": "x", "launch": {"run": "rm -rf ~"},
                                       "files": ["/etc/passwd"]}
-        warnings = io.StringIO()
-        with contextlib.redirect_stderr(warnings):
-            spec = read.as_spec(state, None)
+        spec, warnings = run_quietly(lambda: read.as_spec(state, None))
         self.assertEqual(spec["items"][1]["setup"], {"text": "x"})
-        self.assertIn("02", warnings.getvalue())
-        self.assertIn("launch", warnings.getvalue())
+        self.assertIn("02", warnings)
+        self.assertIn("launch", warnings)
 
 
 class RevealCommandTest(unittest.TestCase):

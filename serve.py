@@ -783,6 +783,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def fail(self, code: int, why: str) -> None:
         self.send(code, why.encode("utf-8"), "text/plain; charset=utf-8")
 
+    def send_json(self, code: int, document) -> None:
+        self.send(code, json.dumps(document, ensure_ascii=False).encode("utf-8"),
+                  "application/json; charset=utf-8")
+
+    def query_value(self, name: str, default=None):
+        """The first value of one query parameter, or `default`."""
+        query = urllib.parse.parse_qs(self.path.partition("?")[2])
+        return (query.get(name) or [default])[0]
+
     def do_HEAD(self) -> None:
         # This is how the page knocks after a save has failed.
         code = 200 if self.path.split("?", 1)[0] in ("/", "/index.html") else 404
@@ -891,8 +900,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # would carry the write to its other name, outside data/.
             target.unlink(missing_ok=True)
             target.write_bytes(source.read_bytes())
-        self.send(200, json.dumps({"reset": [name for name, _, _ in pairs]}).encode("utf-8"),
-                  "application/json; charset=utf-8")
+        self.send_json(200, {"reset": [name for name, _, _ in pairs]})
 
     def launchable(self, setup_id) -> dict | None:
         """A frozen setup's launch, or None once the client has been told why not."""
@@ -914,18 +922,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if phase is None:
             self.fail(409, "a launch is already under way — wait for it to finish")
             return
-        self.send(202, json.dumps({"phase": phase}).encode("utf-8"),
-                  "application/json; charset=utf-8")
+        self.send_json(202, {"phase": phase})
 
     def launch_status(self) -> None:
         """GET /launch?setup=<id> — phase, message, the last log lines of this
         launch, and its url; `idle` for a setup not launched by this server."""
-        query = urllib.parse.parse_qs(self.path.partition("?")[2])
-        setup_id = (query.get("setup") or [None])[0]
+        setup_id = self.query_value("setup")
         if self.launchable(setup_id) is None:
             return
-        self.send(200, json.dumps(self.launcher.status_of(setup_id), ensure_ascii=False)
-                  .encode("utf-8"), "application/json; charset=utf-8")
+        self.send_json(200, self.launcher.status_of(setup_id))
 
     def reveal(self, body: dict) -> None:
         wanted = body.get("path", "")
@@ -937,7 +942,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.fail(404, "does not exist yet — create it first")
             return
         subprocess.run(reveal_command(target), check=False)
-        self.send(200, b"{}", "application/json; charset=utf-8")
+        self.send_json(200, {})
 
     @staticmethod
     def under(base: pathlib.Path, rest: str) -> pathlib.Path | None:
@@ -984,12 +989,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def peek(self) -> None:
         """GET /peek?setup=<id>&file=<index> — one of a frozen setup's files,
         by position, so the page names nothing it was not handed."""
-        query = urllib.parse.parse_qs(self.path.partition("?")[2])
-        setup = self.frozen_setup((query.get("setup") or [None])[0])
+        setup = self.frozen_setup(self.query_value("setup"))
         if setup is None:
             return
         files = setup.get("files") or []
-        index = (query.get("file") or [""])[0]
+        index = self.query_value("file", "")
         if not (index.isascii() and index.isdigit()) or int(index) >= len(files):
             self.fail(404, f"this setup has no file {index!r}")
             return
@@ -1003,9 +1007,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.fail(404, f"{entry['path']} does not exist"
                            + (" — reset the files" if entry.get("managed") else ""))
             return
-        result = peek(entry["name"], target.read_bytes(), entry.get("encoding"))
-        self.send(200, json.dumps(result, ensure_ascii=False).encode("utf-8"),
-                  "application/json; charset=utf-8")
+        self.send_json(200, peek(entry["name"], target.read_bytes(), entry.get("encoding")))
 
     def do_PUT(self) -> None:
         if self.path.split("?", 1)[0] != "/state":
@@ -1049,8 +1051,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             (self.root / READ_MARK).unlink(missing_ok=True)
         shots = sum(len(b["images"]) for b in [*state["items"], state["notes"]])
         sys.stderr.write(f"  saved — {shots} attachment(s), {gone} orphan(s) removed\n")
-        self.send(200, json.dumps(inject(state, setups), ensure_ascii=False).encode("utf-8"),
-                  "application/json; charset=utf-8")
+        self.send_json(200, inject(state, setups))
 
 
 class Server(socketserver.ThreadingTCPServer):

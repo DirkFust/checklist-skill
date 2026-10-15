@@ -13,7 +13,7 @@ import threading
 import time
 import unittest
 
-from helpers import SKILL_ROOT, Folder, RunningServer, build, build_into, serve
+from helpers import SERVE_POLL, SKILL_ROOT, Folder, RunningServer, build, build_into, serve
 
 # Short enough to keep the suite quick, long enough for a shell to start.
 SETTLE = 0.4
@@ -259,7 +259,8 @@ class GroupTest(LaunchTest):
 class UrlTest(LaunchTest):
     def setUp(self):
         self.web = http.server.ThreadingHTTPServer(("127.0.0.1", 0), QuietHandler)
-        threading.Thread(target=self.web.serve_forever, daemon=True).start()
+        threading.Thread(target=self.web.serve_forever, kwargs={"poll_interval": SERVE_POLL},
+                         daemon=True).start()
         up = f"http://127.0.0.1:{self.web.server_address[1]}/"
         down = f"http://127.0.0.1:{free_port()}/"
         self.up = up

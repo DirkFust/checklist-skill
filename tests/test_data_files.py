@@ -2,9 +2,7 @@
 
 import base64
 import codecs
-import contextlib
 import copy
-import io
 import json
 import os
 import pathlib
@@ -14,7 +12,8 @@ import sys
 import tempfile
 import unittest
 
-from helpers import SKILL_ROOT, Folder, RunningServer, build, build_into, read_json, serve
+from helpers import (SKILL_ROOT, Folder, RunningServer, build, build_into, read_json,
+                     run_quietly, serve)
 
 import read
 
@@ -30,11 +29,6 @@ def data_spec(data: dict, files=None) -> dict:
                                             "files": list(data) if files is None else files}},
                   {"title": "B"}],
     }
-
-
-def quiet(call):
-    with contextlib.redirect_stderr(io.StringIO()):
-        return call()
 
 
 class DataBuildTest(unittest.TestCase):
@@ -346,15 +340,15 @@ class CleanTest(unittest.TestCase):
         self.folder.cleanup()
 
     def test_clean_removes_data_dirs_only(self):
-        quiet(lambda: build.clean(self.root))
+        run_quietly(lambda: build.clean(self.root))
         self.assertFalse((self.root / build.DATA_DIR).exists())
         self.assertFalse((self.root / build.PRISTINE_DIR).exists())
         for kept in ("state.json", "setups.json", "template.html", "images/shot.png"):
             self.assertTrue((self.root / kept).is_file(), kept)
 
     def test_clean_twice_is_safe(self):
-        quiet(lambda: build.clean(self.root))
-        quiet(lambda: build.clean(self.root))
+        run_quietly(lambda: build.clean(self.root))
+        run_quietly(lambda: build.clean(self.root))
 
     def test_clean_from_the_command_line(self):
         done = subprocess.run([sys.executable, str(SKILL_ROOT / "build.py"), "--clean",
