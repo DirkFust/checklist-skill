@@ -151,6 +151,10 @@ LINE_END_RE = re.compile(r"\r\n|\r|\n")
 LINE_RE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+")
 EOL_NAMES = {"\n": "lf", "\r\n": "crlf", "\r": "cr"}
 LOOPBACK_NAMES = ("127.0.0.1", "localhost")
+# The one field each mutating POST reads, always a string.
+POST_FIELDS = {"reveal": "path", "reset": "setup", "launch": "setup"}
+# Fields of an item (and of the notes) a PUT may only send as text.
+STATE_TEXT_FIELDS = ("title", "detail", "state", "note", "text")
 # ▶: every step writes here, in the working folder — a build's output is what
 # tells a failed launch apart from a slow one.
 LAUNCH_LOG = "launch.log"
@@ -332,6 +336,33 @@ def pin_setups(state: dict, on_disk: dict) -> dict:
     items = [{**item, "setup": kept.get("setup")}
              for item, kept in zip(state["items"], on_disk.get("items", []))]
     return {**state, "items": items}
+
+
+def state_problem(state) -> str | None:
+    """What is wrong with a state a PUT brought, or None. Only the shape
+    normalize relies on — a list where it calls `.get`, a string where it
+    walks images letter by letter — so a broken client gets a 400 rather
+    than a dropped connection or a state.json full of nonsense."""
+    if not isinstance(state, dict):
+        return "the state must be a JSON object"
+    # Absent or null is fine — normalize fills those in; an empty list is not.
+    meta, items, notes = (state.get(key) for key in ("meta", "items", "notes"))
+    if meta is not None and not isinstance(meta, dict):
+        return "meta must be an object"
+    if items is not None and not (isinstance(items, list)
+                                  and all(isinstance(item, dict) for item in items)):
+        return "items must be a list of objects"
+    if notes is not None and not isinstance(notes, dict):
+        return "notes must be an object"
+    buckets = [(f"item {number}", item) for number, item in enumerate(items or [], 1)]
+    buckets.append(("notes", notes or {}))
+    for where, bucket in buckets:
+        for field in STATE_TEXT_FIELDS:
+            if field in bucket and not isinstance(bucket[field], str):
+                return f"{where}: {field} must be text"
+        if not isinstance(bucket.get("images") or [], list):
+            return f"{where}: images must be a list"
+    return None
 
 
 def normalize(state: dict, folder: pathlib.Path) -> dict:
@@ -762,6 +793,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not isinstance(body, dict):
             self.fail(400, "expected a JSON object")
             return
+        # Checked here, so no action ever meets a list where it expects a name —
+        # that ended in an exception and a dropped connection, not an answer.
+        field = POST_FIELDS[route]
+        if not isinstance(body.get(field), str):
+            self.fail(400, f"{field} must be text")
+            return
         actions[route](body)
 
     def frozen_setup(self, setup_id) -> dict | None:
@@ -936,6 +973,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             incoming = json.loads(self.rfile.read(length))
         except json.JSONDecodeError as error:
             self.fail(400, f"not valid JSON: {error}")
+            return
+        problem = state_problem(incoming)
+        if problem:
+            self.fail(400, problem)
             return
         setups = read_setups(self.root)
         # Materializing, writing and sweeping are one step: a second tab saving in

@@ -86,6 +86,32 @@ class FrozenServerTest(unittest.TestCase):
         self.assertIn(b"3", body)
         self.assertEqual(len(read_json(self.folder.path / "state.json")["items"]), 3)
 
+    def test_malformed_post_bodies_are_400(self):
+        for route, body in (("reveal", {"path": [1]}), ("reveal", {}), ("reveal", {"path": 3}),
+                            ("reset", {"setup": [1]}), ("reset", {}),
+                            ("launch", {"setup": {"a": 1}}), ("launch", {"setup": None})):
+            status, answer = self.server.request(
+                "POST", f"/{route}", json.dumps(body).encode("utf-8"),
+                {"Content-Type": "application/json", "X-Checklist": route})
+            self.assertEqual(status, 400, (route, body, answer))
+            self.assertIn(b"must be", answer)
+
+    def test_malformed_states_are_400(self):
+        before = (self.folder.path / "state.json").read_bytes()
+        good = self.server.page_state()
+        bad_states = [[], "x", {**good, "items": {"0": {}}}, {**good, "items": [1, 2, 3]},
+                      {**good, "notes": ["x"]}, {**good, "notes": {"text": 3}},
+                      {**good, "meta": []}]
+        for field, value in (("title", 1), ("note", ["x"]), ("state", None), ("images", "abc"),
+                             ("detail", {})):
+            items = [dict(item) for item in good["items"]]
+            items[0][field] = value
+            bad_states.append({**good, "items": items})
+        for state in bad_states:
+            status, answer = self.server.put_state(state)
+            self.assertEqual(status, 400, (state, answer))
+        self.assertEqual((self.folder.path / "state.json").read_bytes(), before)
+
     def test_reveal_reads_frozen_setups(self):
         # The state no longer names any path — only setups.json does.
         self.assertEqual(self.server.reveal("/tmp/checklist-test-declared")[0], 404)
