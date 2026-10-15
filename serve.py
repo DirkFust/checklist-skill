@@ -668,15 +668,8 @@ class Launcher:
         leaves the app or server it would have replaced alive. Building beside
         a running app is fine; replacing it is what has to wait."""
         cwd = launch["cwd"]
-        if launch["build"]:
-            failure = self.step(run, "build", launch["build"], cwd, self.build_timeout)
-            if failure:
-                # Said, because the old instance may be this very setup's: its
-                # `running` has just given way to this launch's status.
-                if self.live_alive():
-                    failure += " — the running instance was left as it was"
-                self.set(run, FAILED, failure)
-                return
+        if launch["build"] and not self.built(run, launch["build"], cwd):
+            return
         self.set(run, QUITTING)
         self.stop_live("stopped for the next launch")
         if launch["quit"]:
@@ -696,8 +689,25 @@ class Launcher:
         if not run.url:
             self.set(run, RUNNING)
             return
+        self.open_when_ready(run, process, launch["ready_timeout"])
+
+    def built(self, run: Launch, command: str, cwd: str) -> bool:
+        """Run the build; False — with the launch marked failed — if it did not
+        succeed."""
+        failure = self.step(run, "build", command, cwd, self.build_timeout)
+        if not failure:
+            return True
+        # Said, because the old instance may be this very setup's: its
+        # `running` has just given way to this launch's status.
+        if self.live_alive():
+            failure += " — the running instance was left as it was"
+        self.set(run, FAILED, failure)
+        return False
+
+    def open_when_ready(self, run: Launch, process: subprocess.Popen, timeout: float) -> None:
+        """Wait for the run's url to answer, then open it in the browser."""
         self.set(run, WAITING)
-        failure = self.wait_ready(run.url, process, launch["ready_timeout"])
+        failure = self.wait_ready(run.url, process, timeout)
         if failure:
             # A run still alive after its url never answered is ours, and left
             # alone it would serve on with the page saying `failed` — holding
@@ -841,26 +851,34 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if site is not None and site != "same-origin":
             self.fail(403, "foreign origin")
             return
+        body = self.post_body(route)
+        if body is None:
+            return
+        actions[route](body)
+
+    def post_body(self, route: str) -> dict | None:
+        """The POST body as an object carrying the route's field as text, or
+        None once the client has been told why not."""
         length = self.body_length(MAX_POST_BODY)
         if length is None:
-            return
+            return None
         try:
             body = json.loads(self.rfile.read(length))
         # ValueError covers bytes that are no text at all as well as bad JSON;
         # RecursionError is JSON nested deeper than the parser goes.
         except (ValueError, RecursionError):
             self.fail(400, "not valid JSON")
-            return
+            return None
         if not isinstance(body, dict):
             self.fail(400, "expected a JSON object")
-            return
+            return None
         # Checked here, so no action ever meets a list where it expects a name —
         # that ended in an exception and a dropped connection, not an answer.
         field = POST_FIELDS[route]
         if not isinstance(body.get(field), str):
             self.fail(400, f"{field} must be text")
-            return
-        actions[route](body)
+            return None
+        return body
 
     def frozen_setup(self, setup_id) -> dict | None:
         """A setup from setups.json, or None once the client has been told why
@@ -1018,17 +1036,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.path.split("?", 1)[0] != "/state":
             self.fail(404, "PUT /state only")
             return
-        length = self.body_length(MAX_BODY)
-        if length is None:
-            return
-        try:
-            incoming = json.loads(self.rfile.read(length))
-        except (ValueError, RecursionError) as error:     # see do_POST
-            self.fail(400, f"not valid JSON: {error}")
-            return
-        problem = state_problem(incoming)
-        if problem:
-            self.fail(400, problem)
+        incoming = self.incoming_state()
+        if incoming is None:
             return
         setups = read_setups(self.root)
         # Materializing, writing and sweeping are one step: a second tab saving in
@@ -1054,6 +1063,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
         shots = sum(len(b["images"]) for b in [*state["items"], state["notes"]])
         sys.stderr.write(f"  saved — {shots} attachment(s), {gone} orphan(s) removed\n")
         self.send_json(200, inject(state, setups))
+
+    def incoming_state(self) -> dict | None:
+        """The state a PUT brought, or None once the client has been told why
+        not."""
+        length = self.body_length(MAX_BODY)
+        if length is None:
+            return None
+        try:
+            incoming = json.loads(self.rfile.read(length))
+        except (ValueError, RecursionError) as error:     # see post_body
+            self.fail(400, f"not valid JSON: {error}")
+            return None
+        problem = state_problem(incoming)
+        if problem:
+            self.fail(400, problem)
+            return None
+        return incoming
 
 
 class Server(socketserver.ThreadingTCPServer):
@@ -1114,7 +1140,7 @@ def watchdog(server: Server, root: pathlib.Path, pulse: Pulse,
             return
 
 
-def main() -> None:
+def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("folder")
     parser.add_argument("--port", type=int, default=8765)
@@ -1123,7 +1149,48 @@ def main() -> None:
                         help="stop after this long without a request (0 = never)")
     parser.add_argument("--read-idle", type=int, default=30, metavar="MIN",
                         help="stop this long after read.py took the results (0 = never)")
-    args = parser.parse_args()
+    return parser.parse_args()
+
+
+def install_stop_signals() -> None:
+    """Turn the signals that should end the server into a clean stop."""
+    # Long runs get killed from outside (observed: exit code 144 after several
+    # hours, with a clean goodbye in the log — the trigger sits outside this
+    # process). Nothing is lost: every save writes through, and the page holds
+    # on to its state. Ignoring SIGURG is cheap insurance, SIGTERM is answered.
+    signal.signal(signal.SIGURG, signal.SIG_IGN)
+    # shutdown() from inside the handler deadlocks with serve_forever on the
+    # same thread — the exception arrives cleanly in serve_until_stopped instead.
+    def stop(*_):
+        raise KeyboardInterrupt
+    # SIGHUP too: a terminal that closes would otherwise kill the server
+    # outright, and whatever ▶ started would live on with nobody to stop it.
+    for signum in STOP_SIGNALS:
+        signal.signal(signum, stop)
+
+
+def serve_until_stopped(server: Server, launcher: Launcher, watch_stop: threading.Event) -> bool:
+    """Serve until a stop, then take ▶'s run down too. True if there was one
+    and it has been stopped."""
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        watch_stop.set()
+        # Already on the way down: a second Ctrl-C or SIGTERM would raise
+        # in the middle of the cleanup below and leave the run alive.
+        for signum in (*STOP_SIGNALS, signal.SIGINT):
+            signal.signal(signum, signal.SIG_IGN)
+        # Whatever ▶ started goes down with the server, the idle stop
+        # included — even a dev server someone still uses in another tab.
+        # Left running, it would hold its port with nobody to stop it.
+        ended = launcher.shutdown()
+    return ended
+
+
+def main() -> None:
+    args = parse_arguments()
 
     root = pathlib.Path(args.folder).resolve()
     for needed in ("template.html", "state.json"):
@@ -1138,19 +1205,7 @@ def main() -> None:
         ["python3", str(pathlib.Path(__file__).resolve()), str(root), "--port", str(port)])
     url = f"http://127.0.0.1:{port}/"
     with server:
-        # Long runs get killed from outside (observed: exit code 144 after several
-        # hours, with a clean goodbye in the log — the trigger sits outside this
-        # process). Nothing is lost: every save writes through, and the page holds
-        # on to its state. Ignoring SIGURG is cheap insurance, SIGTERM is answered.
-        signal.signal(signal.SIGURG, signal.SIG_IGN)
-        # shutdown() from inside the handler deadlocks with serve_forever on the
-        # same thread — the exception arrives cleanly down below instead.
-        def stop(*_):
-            raise KeyboardInterrupt
-        # SIGHUP too: a terminal that closes would otherwise kill the server
-        # outright, and whatever ▶ started would live on with nobody to stop it.
-        for signum in STOP_SIGNALS:
-            signal.signal(signum, stop)
+        install_stop_signals()
         # Read this line before handing the URL on: the port may not be the one
         # that was asked for.
         print(f"{url} — {root}", flush=True)
@@ -1164,20 +1219,7 @@ def main() -> None:
                              args=(server, root, pulse, quiet, after_read, stop)).start()
         if args.open:
             webbrowser.open(url)
-        try:
-            server.serve_forever()
-        except KeyboardInterrupt:
-            pass
-        finally:
-            stop.set()
-            # Already on the way down: a second Ctrl-C or SIGTERM would raise
-            # in the middle of the cleanup below and leave the run alive.
-            for signum in (*STOP_SIGNALS, signal.SIGINT):
-                signal.signal(signum, signal.SIG_IGN)
-            # Whatever ▶ started goes down with the server, the idle stop
-            # included — even a dev server someone still uses in another tab.
-            # Left running, it would hold its port with nobody to stop it.
-            ended = launcher.shutdown()
+        ended = serve_until_stopped(server, launcher, stop)
         print("stopped — the state is in state.json"
               + (f"; the process ▶ started was stopped too (log: {launcher.run_log})" if ended else ""),
               flush=True)
