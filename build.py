@@ -716,8 +716,7 @@ def resolve_launch(base: LaunchBase, profile: str | None, own: dict, files: list
 def setup_of(setup, where: str, base: LaunchBase) -> dict | None:
     """A setup's prerequisites: which app, which server, which files.
 
-    Bare text is the short form. Links have to be `http(s)` — the page turns them
-    into a button, and a `javascript:` target has no business there.
+    Bare text is the short form.
     """
     if not setup:
         return None
@@ -733,15 +732,41 @@ def setup_of(setup, where: str, base: LaunchBase) -> dict | None:
     if not all(isinstance(command, str) for command in commands):
         sys.exit(f"{where}: setup.commands must be a list of commands")
 
-    links = setup.get("links") or []
+    links = setup_links(setup.get("links"), where)
+    paths = setup_paths(setup.get("paths"), where)
+    files = setup_files(setup.get("files"), base, where)
+    profile, own_launch = setup_launch(setup.get("launch"), f"{where}, setup.launch")
+    return {
+        "label": setup.get("label", ""),
+        "collapsed": bool(setup.get("collapsed", False)),
+        "text": setup.get("text", ""),
+        "commands": list(commands),
+        "links": links,
+        "paths": paths,
+        "files": files,
+        "launch": resolve_launch(base, profile, own_launch,
+                                 [file["path"] for file in files], where),
+    }
+
+
+def setup_links(raw, where: str) -> list:
+    """A setup's `links`. They have to be `http(s)` — the page turns them into
+    a button, and a `javascript:` target has no business there."""
+    links = raw or []
     for link in links:
         if not isinstance(link, dict) or not str(link.get("url", "")).startswith(("http://", "https://")):
             sys.exit(f"{where}: setup.links needs objects with an http(s) url")
+    return [{"label": link.get("label", ""), "url": link["url"]} for link in links]
 
-    # Absolute, so the button hits regardless of the working directory; the short
-    # `~` form is what gets shown, so the line stays readable.
+
+def setup_paths(raw, where: str) -> list:
+    """A setup's `paths`, each a button that reveals it in the Finder.
+
+    Absolute, so the button hits regardless of the working directory; the short
+    `~` form is what gets shown, so the line stays readable.
+    """
     paths = []
-    for entry in setup.get("paths") or []:
+    for entry in raw or []:
         if isinstance(entry, str):
             entry = {"path": entry}
         if not isinstance(entry, dict) or not entry.get("path"):
@@ -752,20 +777,7 @@ def setup_of(setup, where: str, base: LaunchBase) -> dict | None:
         home = pathlib.Path.home()
         show = f"~/{full.relative_to(home)}" if full.is_relative_to(home) else str(full)
         paths.append({"label": entry.get("label", ""), "path": str(full), "show": show})
-
-    files = setup_files(setup.get("files"), base, where)
-    profile, own_launch = setup_launch(setup.get("launch"), f"{where}, setup.launch")
-    return {
-        "label": setup.get("label", ""),
-        "collapsed": bool(setup.get("collapsed", False)),
-        "text": setup.get("text", ""),
-        "commands": list(commands),
-        "links": [{"label": link.get("label", ""), "url": link["url"]} for link in links],
-        "paths": paths,
-        "files": files,
-        "launch": resolve_launch(base, profile, own_launch,
-                                 [file["path"] for file in files], where),
-    }
+    return paths
 
 
 def setup_files(raw, base: LaunchBase, where: str) -> list:
@@ -880,10 +892,29 @@ def document(spec: dict, folder: pathlib.Path, lang: str = DEFAULT_LANG,
                       project.root, folder / DATA_DIR,
                       merged_profiles(project.launches, spec_profiles), data)
     named = named_setups(spec.get("setups"), base)
+    items, resolved_setups, inline_sources = state_items(spec["items"], named, base)
+    state = {"meta": meta_of(spec, lang), "items": items, "notes": notes_of(spec)}
+    if named is not None:
+        unused = [name for name in named if name not in resolved_setups]
+        if unused:
+            print(f"warning: no item uses setup {', '.join(unused)}", file=sys.stderr)
+    warn_unused_profiles(spec_profiles, [*(spec.get("setups") or {}).values(),
+                                         *inline_sources.values()])
+    # Only what the spec gave, so --as-spec does not invent keys it never had.
+    source = {"inline": inline_sources}
+    for key in ("setups", "launch", "launches", "data"):
+        if spec.get(key) is not None:
+            source[key] = spec[key]
+    return state, {"setups": resolved_setups, "source": source}
 
+
+def state_items(raw_items: list, named: dict | None,
+                base: LaunchBase) -> tuple[list, dict, dict]:
+    """The spec's items as the state holds them, plus the setups they use:
+    resolved by id, and — for the inline ones — as the spec wrote them."""
     items = []
     resolved_setups, inline_sources = {}, {}
-    for number, raw in enumerate(spec["items"], 1):
+    for number, raw in enumerate(raw_items, 1):
         only(raw, ITEM_KEYS, f"item {number}")
         if not raw.get("title"):
             sys.exit(f"item {number}: title is missing")
@@ -905,41 +936,33 @@ def document(spec: dict, folder: pathlib.Path, lang: str = DEFAULT_LANG,
             "note": raw.get("note", ""),
             "images": images_of(raw, f"item {number}"),
         })
+    return items, resolved_setups, inline_sources
 
+
+def meta_of(spec: dict, lang: str) -> dict:
+    """The page's head and settings, as the state carries them."""
+    return {
+        "eyebrow": spec.get("eyebrow", ""),
+        "heading": spec.get("heading", spec.get("title", "")),
+        "standfirst": spec.get("standfirst", ""),
+        # The page reads this, so it survives a --as-spec round trip on its
+        # own.
+        "autofold": bool(spec.get("autofold", True)),
+        # Kept so --as-spec can write it back and a rebuild stays in the
+        # language the page was built in.
+        "lang": lang,
+    }
+
+
+def notes_of(spec: dict) -> dict:
+    """The observations at the foot: text, or an object {text, images}."""
     notes = spec.get("notes", "")
     if isinstance(notes, str):
         notes = {"text": notes}
     if not isinstance(notes, dict):
         sys.exit("notes must be text or an object {text, images}")
     only(notes, {"text", "images"}, "notes")
-
-    state = {
-        "meta": {
-            "eyebrow": spec.get("eyebrow", ""),
-            "heading": spec.get("heading", spec.get("title", "")),
-            "standfirst": spec.get("standfirst", ""),
-            # The page reads this, so it survives a --as-spec round trip on its
-            # own.
-            "autofold": bool(spec.get("autofold", True)),
-            # Kept so --as-spec can write it back and a rebuild stays in the
-            # language the page was built in.
-            "lang": lang,
-        },
-        "items": items,
-        "notes": {"text": notes.get("text", ""), "images": images_of(notes, "notes")},
-    }
-    if named is not None:
-        unused = [name for name in named if name not in resolved_setups]
-        if unused:
-            print(f"warning: no item uses setup {', '.join(unused)}", file=sys.stderr)
-    warn_unused_profiles(spec_profiles, [*(spec.get("setups") or {}).values(),
-                                         *inline_sources.values()])
-    # Only what the spec gave, so --as-spec does not invent keys it never had.
-    source = {"inline": inline_sources}
-    for key in ("setups", "launch", "launches", "data"):
-        if spec.get(key) is not None:
-            source[key] = spec[key]
-    return state, {"setups": resolved_setups, "source": source}
+    return {"text": notes.get("text", ""), "images": images_of(notes, "notes")}
 
 
 def chosen_profile(setup) -> str | None:
@@ -1052,7 +1075,7 @@ def build(spec: dict, shell: str, faces: str, table: dict, lang: str,
     (folder / READ_MARK).unlink(missing_ok=True)
 
 
-def main() -> None:
+def argument_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(usage="%(prog)s spec folder [options] | --clean folder")
     p.add_argument("spec")
     # Optional only so `--clean folder` needs no spec; a build checks it below.
@@ -1073,6 +1096,11 @@ def main() -> None:
                          help="remove the folder's data/ and .pristine/ and stop; the "
                               "results, images and template stay")
     p.set_defaults(rebuild=REBUILD_REFUSE)
+    return p
+
+
+def main() -> None:
+    p = argument_parser()
     a = p.parse_args()
 
     if a.clean:
