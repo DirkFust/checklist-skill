@@ -30,6 +30,7 @@ one conventional commit in this folder's git repo.
   - `{"copy": "<absolute path or ~>"}` — file copied at build time
   - `{"base64": "..."}` — raw bytes
 - `launch`: object, see below; overrides the project config field by field.
+- `launches`: named launch profiles, see below.
 
 ### Item `setup`
 
@@ -62,22 +63,33 @@ absolute, `shlex.quote`d, space-separated; in `url` not allowed), `{data}` (the
 data dir, quoted in commands, raw in `url`). Any other `{…}` aborts the build.
 Commands run via `/bin/sh -c`.
 
-Merge: project config `launch` < spec `launch` < setup `launch`. A key set to
-`null` or `""` at a higher level disables that step. A setup without a resulting
-`run` has no ▶.
+Profiles: a project can start in more than one way (dft: diff vs. editor; web:
+dev server vs. preview build). `launches` — in the project config and the spec —
+is an object `profile name -> launch object` (same fields; name
+`^[a-z0-9][a-z0-9_-]*$`). Spec `launches` merges over project `launches` per
+profile name, field by field. The single `launch` stays the default for setups
+that choose no profile. A setup's `launch` is an object (overrides), a string
+(a profile name), or an object with a `"profile"` key plus overrides; `profile`
+is allowed nowhere else. An unknown profile aborts, listing the known ones. A
+spec profile no setup chooses warns on stderr; project profiles never warn
+(they serve every checklist of the project, each uses only some).
+
+Merge: project config `launch` < spec `launch` < chosen profile (project + spec
+merged) < setup `launch` fields. A key set to `null` or `""` at a higher level
+disables that step. A setup without a resulting `run` has no ▶.
 
 ### Project config
 
 `checklist.json`, found by walking up from the working folder's parent; the
 first one wins; the walk stops at a directory containing `.git` (inclusive) or at
-`$HOME`. Keys: `launch`, `lang`. Unknown keys abort.
+`$HOME`. Keys: `launch`, `launches`, `lang`. Unknown keys abort.
 
 ### Frozen setups (security)
 
 `build.py` writes `<folder>/setups.json`: `{"setups": {id: resolved}, "source":
 {...}}`. `resolved` holds the display fields, resolved `files`, resolved `launch`
 (placeholders substituted, `cwd` absolute) or `null`. `source` holds what
-`--as-spec` needs to rebuild the spec (`launch`, `data`, `setups` raw, and the raw
+`--as-spec` needs to rebuild the spec (`launch`, `launches`, `data`, `setups` raw, and the raw
 inline setups by id).
 
 - `state.json` items carry `"setup": "<id>"` or `null` — never the object.

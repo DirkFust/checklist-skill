@@ -26,12 +26,15 @@ carries on ticking after the report keeps their server.
 
 `--as-spec` prints the state back in the shape `build.py` eats, so a list can be
 extended without losing what the human already put in: read it, add the new
-items, rebuild **into the same folder** (the attachments stay where they are).
-That is a conversion, not a result, and sets no marker. `--json` prints the raw
-state.
+items, rebuild **into the same folder** (the attachments stay where they are)
+with `--force` — the spec already carries the ticks, and a saved folder refuses
+a plain rebuild. That is a conversion, not a result, and sets no marker.
+`--json` prints the raw state.
 
 Setups are not in the state any more, only their ids — `setups.json` keeps each
-inline setup exactly as the spec gave it, and `--as-spec` puts that back in place.
+inline setup exactly as the spec gave it, plus the named `setups` and the
+spec's `launch`, and `--as-spec` puts all of that back in place, with `lang`
+from the state.
 Folders built before then still carry the setup object in the state; that is
 what goes back for them.
 """
@@ -83,10 +86,14 @@ def load_setups(folder: pathlib.Path) -> dict | None:
 
 
 def spec_setup(setup, frozen: dict | None):
-    """An item's setup as the spec wrote it: the raw inline source for an id,
-    the state's own object for a folder without frozen setups."""
+    """An item's setup as the spec wrote it: a named setup by its name, the raw
+    inline source for an inline id, the state's own object for a folder without
+    frozen setups."""
     if isinstance(setup, str) and frozen is not None:
-        return frozen.get("source", {}).get("inline", {}).get(setup)
+        source = frozen.get("source", {})
+        if setup in (source.get("setups") or {}):
+            return setup
+        return source.get("inline", {}).get(setup)
     return setup
 
 
@@ -198,6 +205,13 @@ def as_spec(state: dict, frozen: dict | None = None) -> dict:
         "items": [],
         "notes": {"text": notes.get("text", ""), "images": notes.get("images") or []},
     }
+    # Absent in folders built before these existed; then the spec leaves them out.
+    if meta.get("lang"):
+        spec["lang"] = meta["lang"]
+    source = (frozen or {}).get("source", {})
+    for key in ("setups", "launch", "launches"):
+        if key in source:
+            spec[key] = source[key]
     for item in state.get("items") or []:
         kept = {"title": item.get("title", ""),
                 "detail": item.get("detail", ""),
@@ -218,7 +232,8 @@ def main() -> None:
     p.add_argument("--json", action="store_true", help="print the raw state instead")
     p.add_argument("--as-spec", action="store_true",
                    help="print it as a build.py spec, to extend the list without "
-                        "losing ticks and notes (rebuild into the same folder)")
+                        "losing ticks and notes (rebuild into the same folder "
+                        "with --force)")
     a = p.parse_args()
 
     folder = pathlib.Path(a.folder).expanduser().resolve()

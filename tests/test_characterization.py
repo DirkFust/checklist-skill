@@ -32,7 +32,7 @@ class BuildTest(unittest.TestCase):
         spec = sample_spec()
         spec["items"][0]["setup"]["command"] = "make"
         with self.assertRaises(SystemExit):
-            build.document(spec)
+            build.document(spec, self.folder.path)
 
 
 class ServerTest(unittest.TestCase):

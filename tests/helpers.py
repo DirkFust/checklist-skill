@@ -40,11 +40,12 @@ def sample_spec() -> dict:
     }
 
 
-def build_into(spec: dict, folder: pathlib.Path) -> None:
-    """What `build.py spec folder` does, minus argument parsing and fonts."""
+def build_into(spec: dict, folder: pathlib.Path, **options) -> None:
+    """What `build.py spec folder` does, minus argument parsing, fonts and the
+    project config walk — `options` go straight to `build.build`."""
     shell = (SKILL_ROOT / "shell.html").read_text(encoding="utf-8")
     table = build.strings(SKILL_ROOT / "strings" / f"{LANG}.json")
-    build.build(spec, shell, "", table, LANG, folder)
+    build.build(spec, shell, "", table, LANG, folder, **options)
 
 
 def read_json(path: pathlib.Path) -> dict:

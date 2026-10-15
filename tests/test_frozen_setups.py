@@ -2,6 +2,7 @@
 
 import copy
 import json
+import pathlib
 import unittest
 
 from helpers import Folder, RunningServer, build, build_into, read_json, sample_spec
@@ -10,8 +11,11 @@ import read
 
 
 def resolved_first() -> dict:
-    """What build.setup_of makes of the first sample item's setup."""
-    return build.setup_of(sample_spec()["items"][0], "item 1")
+    """What build.setup_of makes of the first sample item's setup — it has no
+    `run`, so where its launch would point to does not matter."""
+    nowhere = pathlib.Path("/")
+    base = build.LaunchBase(layers=(), root=nowhere, data=nowhere)
+    return build.setup_of(sample_spec()["items"][0]["setup"], "item 1", base)
 
 
 class FreezeTest(unittest.TestCase):
