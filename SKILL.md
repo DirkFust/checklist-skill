@@ -213,7 +213,8 @@ the order isn't load-bearing, don't put it into the items' text either.
 ## Folding
 
 The chevron on the right of an item folds it away: marker, title and number stay, `setup`,
-detail, note and images go. The folded line keeps a trace of what is inside: the note's first
+detail, note and images go — except a setup's head line when it carries ▶ or **Reset files**,
+so those stay one click away; a click on that line unfolds the item. The folded line keeps a trace of what is inside: the note's first
 words and the image count.
 
 **A ticked item folds itself away after two seconds**, unless pointer or caret still rest on
@@ -223,7 +224,7 @@ compensation: [reference.md](reference.md).
 
 `"collapsed": true` in the spec starts an item folded. Worth it for a long list whose first
 half is groundwork — but never for an item whose `setup` carries prerequisites, because folding
-hides those too. Folding is a view, not a result: it raises no unsaved warning and simply rides
+hides their text too. Folding is a view, not a result: it raises no unsaved warning and simply rides
 along with the next save.
 
 ## Images and observations

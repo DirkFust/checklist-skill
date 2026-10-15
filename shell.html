@@ -106,7 +106,10 @@
   .chev svg { display: block; transition: transform .12s; }
   li.item.folded .chev svg { transform: rotate(-90deg); }
   li.item.folded { gap: 0; }
-  li.item.folded .setup,
+  /* Its buttons are why a setup stays in a folded item: its summary row. */
+  li.item.folded .setup.has-actions { margin-top: 8px; }
+  li.item.folded .setup:not(.has-actions),
+  li.item.folded .setup > :not(summary),
   li.item.folded .detail,
   li.item.folded .note-wrap,
   li.item.folded .shots,
@@ -226,20 +229,24 @@
     display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
   }
   .setup .same-as { color: var(--ink-faint); }
-  /* ▶ lives in the summary row, so a folded "same as" block starts without
-     being opened; the row's small caps stop at its edge. */
-  .launch {
-    margin-left: auto; display: flex; align-items: center; gap: 8px;
+  /* ▶ and Reset files live in the summary row, so a folded block — or a folded
+     item — starts and resets without being opened; the row's small caps stop
+     at their edge. */
+  .setup-actions {
+    margin-left: auto; display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
     font-family: "Public Sans", ui-sans-serif, system-ui, sans-serif;
     font-weight: 400; letter-spacing: normal; text-transform: none;
   }
-  .launch button {
+  .launch, .reset { display: flex; align-items: center; gap: 8px; }
+  .reset .said { font-size: 12.5px; color: var(--problem); }
+  .launch button, .reset button {
     font: inherit; font-size: 12.5px; color: var(--accent); background: var(--surface);
     border: 1px solid var(--accent); border-radius: 3px; padding: 2px 10px; cursor: pointer;
   }
-  .launch button:hover { background: var(--accent); color: var(--surface); }
-  .launch button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
-  .launch button[disabled], .setup-path button[disabled] { opacity: .5; cursor: default; }
+  .launch button:hover, .reset button:hover { background: var(--accent); color: var(--surface); }
+  .launch button:focus-visible, .reset button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+  .launch button[disabled], .reset button[disabled],
+  .setup-path button[disabled] { opacity: .5; cursor: default; }
   .launch-status { font-size: 12.5px; color: var(--ink-soft); }
   .launch-status[data-phase="failed"] { color: var(--problem); }
   .launch-status[data-phase="running"],
@@ -247,6 +254,7 @@
   .setup > summary::-webkit-details-marker { display: none; }
   .setup > summary::before { content: "\25B8"; font-size: 10px; }
   .setup[open] > summary::before { content: "\25BE"; }
+  li.item.folded .setup > summary::before { content: "\25B8"; }
   .setup > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   .setup-body { padding: 0 12px 12px; display: flex; flex-direction: column; gap: 9px; }
   .setup-body p { margin: 0; font-size: 14.5px; color: var(--ink-soft); max-width: 62ch; }
@@ -768,17 +776,43 @@
     map.get(id).push(entry);
   }
 
+  // A button in a setup's summary row. A click there would also fold the
+  // block, so the button keeps its click to itself. From the keyboard the
+  // summary would still get Space and Enter, so the button takes both keys and
+  // acts on keydown. Space also on keyup: Firefox fires its click (and the
+  // summary's toggle) there.
+  function headButton(label, act) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = label;
+    button.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      act();
+    });
+    button.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (!e.repeat && !button.disabled) act();
+    });
+    button.addEventListener("keyup", (e) => {
+      if (e.key !== " ") return;
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    return button;
+  }
+
   // Puts the managed files back the way the build wrote them, then shows the
-  // rows what they hold now.
-  function resetLine(setupId) {
-    const row = document.createElement("div");
-    row.className = "setup-path";
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.textContent = "{{t.reset_files}}";
+  // rows what they hold now. It sits in the summary row beside ▶, so a folded
+  // block or item resets without being opened.
+  function resetControls(setupId) {
+    const wrap = document.createElement("span");
+    wrap.className = "reset";
     const said = document.createElement("span");
     said.className = "said";
-    btn.addEventListener("click", async () => {
+    const btn = headButton("{{t.reset_files}}", async () => {
       said.textContent = "";
       btn.disabled = true;
       try {
@@ -796,8 +830,8 @@
         btn.disabled = false;
       }
     });
-    row.append(btn, said);
-    return row;
+    wrap.append(btn, said);
+    return wrap;
   }
 
   // ▶: the server runs the setup's build, quit and run, and this page asks
@@ -897,14 +931,12 @@
     view.button.disabled = false;
   }
 
-  // ▶ and its status sit in the summary row. A click there would also fold
-  // the block, so the button keeps its click to itself.
+  // ▶ and its status sit in the summary row.
   function launchControls(setup, box) {
     const wrap = document.createElement("span");
     wrap.className = "launch";
-    const button = document.createElement("button");
-    button.type = "button";
-    button.textContent = "▶ {{t.launch_start}}";
+    let view = null;
+    const button = headButton("▶ {{t.launch_start}}", () => startLaunch(setup.id, view));
     // Every step a press runs, one per line — nothing ▶ executes stays out of
     // sight, a project config's build or quit included.
     button.title = LAUNCH_STEPS
@@ -916,27 +948,7 @@
     const tail = document.createElement("pre");
     tail.className = "peek";
     tail.hidden = true;
-    const view = { button, status, tail, box };
-    button.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      startLaunch(setup.id, view);
-    });
-    // From the keyboard the summary would still get Space and Enter and fold
-    // the block — so the button takes both keys itself and starts on keydown.
-    // Space also on keyup: Firefox fires its click (and the summary's toggle)
-    // there.
-    button.addEventListener("keydown", (e) => {
-      if (e.key !== "Enter" && e.key !== " ") return;
-      e.preventDefault();
-      e.stopPropagation();
-      if (!e.repeat && !button.disabled) startLaunch(setup.id, view);
-    });
-    button.addEventListener("keyup", (e) => {
-      if (e.key !== " ") return;
-      e.preventDefault();
-      e.stopPropagation();
-    });
+    view = { button, status, tail, box };
     wrap.append(button, status);
     together(launchViewsOf, setup.id, view);
     return { wrap, tail };
@@ -1001,10 +1013,14 @@
 
     const body = document.createElement("div");
     body.className = "setup-body";
+    // ▶ and Reset files share the summary row, the one line of a setup that
+    // a folded block — and a folded item — still shows.
+    const actions = document.createElement("span");
+    actions.className = "setup-actions";
     // /launch, /peek and /reset go by setup id; a folder built before ids has none.
     if (setup.id && setup.launch) {
       const launch = launchControls(setup, box);
-      head.append(launch.wrap);
+      actions.append(launch.wrap);
       body.append(launch.tail);
     }
     prose(setup.text, body);
@@ -1016,7 +1032,11 @@
       together(fileRowsOf, setup.id, line);
     });
     if (rows.length && setup.files.some((file) => file.managed)) {
-      body.append(resetLine(setup.id));
+      actions.append(resetControls(setup.id));
+    }
+    if (actions.childElementCount) {
+      head.append(actions);
+      box.classList.add("has-actions");
     }
 
     const links = (setup.links || []).filter((link) => link && SAFE_URL.test(link.url || ""));
@@ -1169,7 +1189,18 @@
       if (item.setup) {
         const id = item.setup.id;
         const repeats = id && previousSetup && previousSetup.id === id;
-        li.append(setupBlock(item.setup, repeats ? ordinal(previousSetup.number) : null));
+        const block = setupBlock(item.setup, repeats ? ordinal(previousSetup.number) : null);
+        // A folded item still shows the summary row for its buttons, but not
+        // the body — a click on the row there would toggle what nobody sees,
+        // so it unfolds the item with the block open instead.
+        block.querySelector("summary").addEventListener("click", (e) => {
+          if (!DOC.items[i].collapsed) return;
+          e.preventDefault();
+          disarm();
+          fold(false);
+          block.open = true;
+        });
+        li.append(block);
         previousSetup = { id, number: i + 1 };
       }
 
