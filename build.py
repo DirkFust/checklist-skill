@@ -150,6 +150,7 @@ import re
 import shlex
 import shutil
 import sys
+import urllib.parse
 
 STATES = {"open", "ok", "problem", "skipped"}
 SETUPS_FILE = "setups.json"
@@ -584,6 +585,21 @@ def fill(text: str | None, values: dict, where: str) -> str | None:
     return PLACEHOLDER_RE.sub(substitute, text)
 
 
+def check_url(url: str, where: str) -> None:
+    """A url ▶ can wait for: http(s), a host, a port that is one. The server
+    probes it until it answers — one it cannot even ask would leave the page
+    saying `waiting` until the timeout, for a typo. `{data}` right after the
+    scheme (`http://{data}`) lands here too: the path makes a url without a
+    host."""
+    parts = urllib.parse.urlsplit(url)
+    try:
+        port_ok = parts.port is None or 0 < parts.port
+    except ValueError:              # not a number, or above 65535
+        port_ok = False
+    if parts.scheme not in ("http", "https") or not parts.hostname or not port_ok:
+        sys.exit(f"{where}: launch.url needs http(s), a host and a valid port, not {url!r}")
+
+
 def resolve_launch(base: LaunchBase, profile: str | None, own: dict, files: list,
                    where: str) -> dict | None:
     """The launch a setup freezes: levels merged, placeholders filled, `cwd`
@@ -603,8 +619,8 @@ def resolve_launch(base: LaunchBase, profile: str | None, own: dict, files: list
               for key in LAUNCH_COMMANDS}
     # The url is opened, not run, so it takes the bare path — and no file list.
     url = fill(merged.get("url"), {"data": str(base.data)}, f"{where}, launch.url")
-    if url is not None and not url.startswith(("http://", "https://")):
-        sys.exit(f"{where}: launch.url needs http(s), not {url!r}")
+    if url is not None:
+        check_url(url, where)
     cwd = pathlib.Path(merged.get("cwd") or base.root).expanduser()
     if not cwd.is_absolute():
         sys.exit(f"{where}: launch.cwd needs an absolute path, not {merged['cwd']!r}")

@@ -274,6 +274,28 @@ class UrlTest(LaunchTest):
         self.assertEqual(self.opened, [])
 
 
+class UnexpectedErrorTest(LaunchTest):
+    LAUNCHES = {"ready": {"run": "sleep 30", "url": "http://127.0.0.1:1/"}}
+
+    def setUp(self):
+        super().setUp()
+        self.server.stop()
+
+        def broken_probe(url):
+            raise ValueError("probe broke")
+        self.launcher = serve.Launcher(self.root, opener=self.opened.append, settle=SETTLE,
+                                       kill_grace=GRACE, poll=POLL, probe=broken_probe)
+        self.server = RunningServer(self.root, self.launcher)
+
+    def test_any_error_fails_the_launch_instead_of_hanging(self):
+        result = self.launched("ready")
+        self.assertEqual(result["phase"], "failed", result)
+        self.assertIn("probe broke", result["message"])
+        self.assertTrue(any("ValueError" in line for line in result["tail"]), result["tail"])
+        # The worker let go of the lock: the next ▶ is not refused as busy.
+        self.assertEqual(self.server.launch("ready")[0], 202)
+
+
 class TemplateTest(unittest.TestCase):
     def test_launch_chrome_in_both_languages(self):
         for lang in ("en", "de"):

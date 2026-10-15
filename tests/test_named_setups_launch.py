@@ -177,6 +177,15 @@ class LaunchTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.resolved({"run": "go", "url": "file:///etc/passwd"})
 
+    def test_url_needs_a_host_and_a_valid_port(self):
+        # Each of these would leave ▶ waiting forever: the readiness probe
+        # cannot even be asked.
+        for url in ("http://localhost:99999/", "http:///x", "http://localhost:abc/",
+                    "http://{data}"):
+            with self.assertRaises(SystemExit, msg=url) as stop:
+                self.resolved({"run": "go", "url": url})
+            self.assertIn("launch.url", str(stop.exception), url)
+
     def test_data_placeholder_quoted_in_commands_raw_in_url(self):
         launch = self.resolved({"build": "ls {data}", "run": "open {data}/a.txt",
                                 "url": "http://localhost:1/?d={data}"})

@@ -106,6 +106,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import urllib.parse
 import webbrowser
 
@@ -437,14 +438,15 @@ class Launcher:
     build of the same project. Every step gets a process group of its own, so
     stopping one reaches what it started too (a dev server's watcher, a
     bundler) and nothing else. Timeouts and the opener are arguments so the
-    tests can run in fractions of a second and open no browser.
+    tests can run in fractions of a second and open no browser; the readiness
+    probe too, so they can make it fail in ways a real url would only rarely.
     """
 
     def __init__(self, root: pathlib.Path, opener=open_url, quit_timeout: float = QUIT_TIMEOUT,
                  build_timeout: float = BUILD_TIMEOUT, settle: float = SETTLE_SECONDS,
-                 kill_grace: float = KILL_GRACE, poll: float = READY_POLL):
+                 kill_grace: float = KILL_GRACE, poll: float = READY_POLL, probe=answers):
         self.log = root / LAUNCH_LOG
-        self.opener = opener
+        self.opener, self.probe = opener, probe
         self.quit_timeout, self.build_timeout = quit_timeout, build_timeout
         self.settle, self.kill_grace, self.poll = settle, kill_grace, poll
         self.lock = threading.Lock()
@@ -560,6 +562,14 @@ class Launcher:
             self.steps(run, launch)
         except (OSError, Stopping) as error:     # a cwd that is gone, a full disk
             self.set(run, FAILED, str(error))
+        except Exception as error:
+            # Anything else is a bug — but a worker that dies of it leaves the
+            # phase where it was, and the page polls `waiting` forever. Failed,
+            # with the traceback in the log, is something a human can act on.
+            self.set(run, FAILED, f"{type(error).__name__}: {error}")
+            with contextlib.suppress(OSError):
+                with self.log.open("a", encoding="utf-8") as log:
+                    log.write(traceback.format_exc())
         finally:
             with self.lock:
                 self.busy = False
@@ -605,7 +615,7 @@ class Launcher:
     def wait_ready(self, url: str, process: subprocess.Popen, timeout: float) -> str | None:
         """None once `url` answers, else why it never will."""
         deadline = time.monotonic() + timeout
-        while not answers(url):
+        while not self.probe(url):
             code = process.poll()
             if code is not None:
                 return f"run exited with {code} before {url} answered"
