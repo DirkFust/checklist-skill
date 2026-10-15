@@ -36,7 +36,8 @@ inline setup exactly as the spec gave it, plus the named `setups`, the spec's
 `launch`, `launches` and `data`, and `--as-spec` puts all of that back in place,
 with `lang` from the state.
 Folders built before then still carry the setup object in the state; that is
-what goes back for them.
+what goes back for them — without `launch` and `files` (a warning names each
+item): the page writes that state, so nothing in it may become a command.
 """
 
 import argparse
@@ -49,6 +50,8 @@ TOKEN = {"open": "[ ]", "ok": "[x]", "problem": "[!]", "skipped": "[-]"}
 READ_MARK = ".read"
 # Written by build.py beside state.json; absent in folders built before it.
 SETUPS_FILE = "setups.json"
+# What a setup out of a page-written state must not carry into a spec.
+UNTRUSTED_SETUP_KEYS = ("launch", "files")
 
 
 def mark_read(folder: pathlib.Path, state: dict) -> bool:
@@ -85,16 +88,31 @@ def load_setups(folder: pathlib.Path) -> dict | None:
         sys.exit(f"{path} is not valid JSON: {broken}")
 
 
-def spec_setup(setup, frozen: dict | None):
+def spec_setup(setup, frozen: dict | None, number: int):
     """An item's setup as the spec wrote it: a named setup by its name, the raw
     inline source for an inline id, the state's own object for a folder without
-    frozen setups."""
+    frozen setups — minus what would run or be written on a rebuild."""
     if isinstance(setup, str) and frozen is not None:
         source = frozen.get("source", {})
         if setup in (source.get("setups") or {}):
             return setup
         return source.get("inline", {}).get(setup)
+    if frozen is None and isinstance(setup, dict):
+        return untrusted_setup(setup, number)
     return setup
+
+
+def untrusted_setup(setup: dict, number: int) -> dict:
+    """A setup out of an old folder's state. The page wrote that state, so its
+    `launch` and `files` prove nothing — carried into a spec, a rebuild would
+    freeze a command the page put there, and ▶ would run it. They go; whoever
+    rebuilds writes them again on purpose."""
+    dropped = [key for key in UNTRUSTED_SETUP_KEYS if key in setup]
+    if dropped:
+        print(f"warning: item {number:02d}: dropped {' and '.join(dropped)} from its setup — "
+              f"this folder predates setups.json, its state is the page's to write; "
+              f"put them back into the spec yourself if they belong there", file=sys.stderr)
+    return {key: value for key, value in setup.items() if key not in UNTRUSTED_SETUP_KEYS}
 
 
 def indent(text: str, pad: str) -> str:
@@ -212,14 +230,14 @@ def as_spec(state: dict, frozen: dict | None = None) -> dict:
     for key in ("setups", "launch", "launches", "data"):
         if key in source:
             spec[key] = source[key]
-    for item in state.get("items") or []:
+    for number, item in enumerate(state.get("items") or [], 1):
         kept = {"title": item.get("title", ""),
                 "detail": item.get("detail", ""),
                 "state": item.get("state", "open"),
                 "collapsed": bool(item.get("collapsed")),
                 "note": item.get("note", ""),
                 "images": item.get("images") or []}
-        setup = spec_setup(item.get("setup"), frozen)
+        setup = spec_setup(item.get("setup"), frozen, number)
         if setup:
             kept["setup"] = setup
         spec["items"].append(kept)

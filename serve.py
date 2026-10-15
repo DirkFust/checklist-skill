@@ -367,6 +367,17 @@ class Pulse:
         self.opened = False
 
 
+def reveal_command(target: pathlib.Path) -> list:
+    """Open folders, only reveal files: a click must not launch an application.
+    A bundle is a folder to the file system and an application (or a plugin,
+    a document package) to `open` — so `*.app`, and any folder carrying
+    `Contents/Info.plist`, is revealed like a file."""
+    bundle = target.suffix == ".app" or (target / "Contents" / "Info.plist").is_file()
+    if target.is_dir() and not bundle:
+        return ["open", str(target)]
+    return ["open", "-R", str(target)]
+
+
 def open_url(url: str) -> None:
     """The default browser, the way a click in the Finder picks it."""
     subprocess.run(["open", url], check=False)
@@ -840,9 +851,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not target.exists():
             self.fail(404, "does not exist yet — create it first")
             return
-        # Open folders, only reveal files: a click must not launch an application.
-        subprocess.run(["open", str(target)] if target.is_dir() else ["open", "-R", str(target)],
-                       check=False)
+        subprocess.run(reveal_command(target), check=False)
         self.send(200, b"{}", "application/json; charset=utf-8")
 
     @staticmethod

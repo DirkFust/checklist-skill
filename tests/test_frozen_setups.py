@@ -1,11 +1,14 @@
 """Setups are frozen at build time; the page can neither invent nor change them."""
 
+import contextlib
 import copy
+import io
 import json
 import pathlib
+import tempfile
 import unittest
 
-from helpers import Folder, RunningServer, build, build_into, read_json, sample_spec
+from helpers import Folder, RunningServer, build, build_into, read_json, sample_spec, serve
 
 import read
 
@@ -153,6 +156,35 @@ class OldFolderTest(unittest.TestCase):
         spec = read.as_spec(read_json(self.folder.path / "state.json"),
                             read.load_setups(self.folder.path))
         self.assertEqual(spec["items"][0]["setup"]["text"], "Start it.")
+
+    def test_as_spec_drops_launch_and_files_the_page_may_have_written(self):
+        # The state of an old folder is the page's to write: a rebuild from it
+        # must not freeze a command the page put there.
+        state = read_json(self.folder.path / "state.json")
+        state["items"][1]["setup"] = {"text": "x", "launch": {"run": "rm -rf ~"},
+                                      "files": ["/etc/passwd"]}
+        warnings = io.StringIO()
+        with contextlib.redirect_stderr(warnings):
+            spec = read.as_spec(state, None)
+        self.assertEqual(spec["items"][1]["setup"], {"text": "x"})
+        self.assertIn("02", warnings.getvalue())
+        self.assertIn("launch", warnings.getvalue())
+
+
+class RevealCommandTest(unittest.TestCase):
+    def test_files_and_bundles_are_revealed_folders_opened(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = pathlib.Path(temp)
+            plain, app, bundle, file = (base / "plain", base / "Some.app",
+                                        base / "Plugin.bundle", base / "f.txt")
+            plain.mkdir()
+            app.mkdir()
+            (bundle / "Contents").mkdir(parents=True)
+            (bundle / "Contents" / "Info.plist").write_text("", encoding="utf-8")
+            file.write_text("", encoding="utf-8")
+            self.assertEqual(serve.reveal_command(plain), ["open", str(plain)])
+            for target in (app, bundle, file):
+                self.assertEqual(serve.reveal_command(target), ["open", "-R", str(target)])
 
 
 class ReadTest(unittest.TestCase):
