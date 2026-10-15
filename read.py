@@ -136,68 +136,79 @@ def report(folder: pathlib.Path, state: dict) -> list[str]:
     if not saved:
         lines.append("!! The page never sent a state back. What follows is the pre-fill")
         lines.append("!! from the spec — not a result produced by the human.")
-
-    tally = {key: 0 for key in TOKEN}
-    for item in items:
-        key = item.get("state", "open")
-        tally[key] = tally.get(key, 0) + 1
-    counted = "{} fine, {} open, {} problem".format(
-        tally["ok"], tally["open"], tally["problem"])
-    # Named only when there are any: a standing "0 skipped" is noise on the
-    # line that gets read first.
-    if tally["skipped"]:
-        counted += ", {} skipped".format(tally["skipped"])
-    # Anything outside the three states is named rather than silently dropped —
-    # otherwise the numbers do not add up and nothing says why.
-    stray = {key: n for key, n in tally.items() if key not in TOKEN and n}
-    if stray:
-        counted += "".join(f", {n} {key!r}(?)" for key, n in sorted(stray.items()))
-    lines.append(f"Items:   {len(items)} — {counted}")
+    lines.append(f"Items:   {len(items)} — {counted(items)}")
     lines.append("")
 
-    shots: list[str] = []
     for number, item in enumerate(items, 1):
-        state_key = item.get("state", "open")
-        lines.append("{:02d} {} {}".format(
-            number, TOKEN.get(state_key, "[?]"), item.get("title", "—")))
-        note = (item.get("note") or "").strip()
-        if note:
-            head, *rest = note.splitlines()
-            lines.append(f"      Note:  {head}")
-            lines.extend("             " + line for line in rest)
-        elif state_key == "problem":
-            lines.append("      Note:  — (a problem with no note — ask about it)")
-        elif state_key == "skipped":
-            lines.append("      Note:  — (no reason given)")
-        for image in item.get("images") or []:
-            full = folder / image
-            shots.append(str(full))
-            lines.append(f"      Image: {full}")
-        lines.append("")
-
-    # The marker exists so nobody has to answer for these twice. Spelling that
-    # out here beats hoping the tokens in the list are read as an instruction.
-    settled = ["{:02d}".format(n) for n, item in enumerate(items, 1)
-               if item.get("state") == "skipped"]
-    if settled:
-        lines.append("Skipped ({}) — set aside on purpose. Do not report these "
-                     "as open and do not ask for them to be run.".format(
-                         ", ".join(settled)))
-        lines.append("")
+        lines.extend(item_lines(number, item, folder))
+    lines.extend(skipped_lines(items))
 
     text = (notes.get("text") or "").strip()
     lines.append("Observations:")
     lines.append(indent(text, "  ") if text else "  —")
-    for image in notes.get("images") or []:
-        full = folder / image
-        shots.append(str(full))
-        lines.append(f"  Image: {full}")
+    lines.extend(f"  Image: {folder / image}" for image in notes.get("images") or [])
 
+    shots = [str(folder / image) for bucket in [*items, notes]
+             for image in bucket.get("images") or []]
     if shots:
         lines.append("")
         lines.append(f"{len(shots)} image(s) — open each with `Read` before reporting on it:")
         lines.extend("  " + shot for shot in shots)
     return lines
+
+
+def counted(items: list) -> str:
+    """How many items stand in each state, for the summary line."""
+    tally = {key: 0 for key in TOKEN}
+    for item in items:
+        key = item.get("state", "open")
+        tally[key] = tally.get(key, 0) + 1
+    text = "{} fine, {} open, {} problem".format(
+        tally["ok"], tally["open"], tally["problem"])
+    # Named only when there are any: a standing "0 skipped" is noise on the
+    # line that gets read first.
+    if tally["skipped"]:
+        text += ", {} skipped".format(tally["skipped"])
+    # Anything outside the three states is named rather than silently dropped —
+    # otherwise the numbers do not add up and nothing says why.
+    stray = {key: n for key, n in tally.items() if key not in TOKEN and n}
+    if stray:
+        text += "".join(f", {n} {key!r}(?)" for key, n in sorted(stray.items()))
+    return text
+
+
+def item_lines(number: int, item: dict, folder: pathlib.Path) -> list[str]:
+    """One item: marker and title, its note — or what its missing note means —
+    and its images, closed by a blank line."""
+    state_key = item.get("state", "open")
+    lines = ["{:02d} {} {}".format(number, TOKEN.get(state_key, "[?]"), item.get("title", "—"))]
+    note = (item.get("note") or "").strip()
+    if note:
+        head, *rest = note.splitlines()
+        lines.append(f"      Note:  {head}")
+        lines.extend("             " + line for line in rest)
+    elif state_key == "problem":
+        lines.append("      Note:  — (a problem with no note — ask about it)")
+    elif state_key == "skipped":
+        lines.append("      Note:  — (no reason given)")
+    lines.extend(f"      Image: {folder / image}" for image in item.get("images") or [])
+    lines.append("")
+    return lines
+
+
+def skipped_lines(items: list) -> list[str]:
+    """The skipped items named once more, as settled — nothing if there are none.
+
+    The marker exists so nobody has to answer for these twice. Spelling that
+    out here beats hoping the tokens in the list are read as an instruction.
+    """
+    settled = ["{:02d}".format(n) for n, item in enumerate(items, 1)
+               if item.get("state") == "skipped"]
+    if not settled:
+        return []
+    return ["Skipped ({}) — set aside on purpose. Do not report these "
+            "as open and do not ask for them to be run.".format(", ".join(settled)),
+            ""]
 
 
 def as_spec(state: dict, frozen: dict | None = None) -> dict:
@@ -229,18 +240,23 @@ def as_spec(state: dict, frozen: dict | None = None) -> dict:
     for key in ("setups", "launch", "launches", "data"):
         if key in source:
             spec[key] = source[key]
-    for number, item in enumerate(state.get("items") or [], 1):
-        kept = {"title": item.get("title", ""),
-                "detail": item.get("detail", ""),
-                "state": item.get("state", "open"),
-                "collapsed": bool(item.get("collapsed")),
-                "note": item.get("note", ""),
-                "images": item.get("images") or []}
-        setup = spec_setup(item.get("setup"), frozen, number)
-        if setup:
-            kept["setup"] = setup
-        spec["items"].append(kept)
+    spec["items"] = [spec_item(item, frozen, number)
+                     for number, item in enumerate(state.get("items") or [], 1)]
     return spec
+
+
+def spec_item(item: dict, frozen: dict | None, number: int) -> dict:
+    """One item as the spec writes it, ticks, note and attachments included."""
+    kept = {"title": item.get("title", ""),
+            "detail": item.get("detail", ""),
+            "state": item.get("state", "open"),
+            "collapsed": bool(item.get("collapsed")),
+            "note": item.get("note", ""),
+            "images": item.get("images") or []}
+    setup = spec_setup(item.get("setup"), frozen, number)
+    if setup:
+        kept["setup"] = setup
+    return kept
 
 
 def main() -> None:
