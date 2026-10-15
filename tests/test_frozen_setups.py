@@ -209,6 +209,19 @@ class RevealCommandTest(unittest.TestCase):
             for target in (app, bundle, file):
                 self.assertEqual(serve.reveal_command(target), ["open", "-R", str(target)])
 
+    def test_packages_without_info_plist_are_revealed(self):
+        # Document packages and project folders are folders that `open` hands
+        # to an application — none of them carries Contents/Info.plist.
+        with tempfile.TemporaryDirectory() as temp:
+            base = pathlib.Path(temp)
+            for name in ("Notes.rtfd", "App.xcodeproj", "Letter.pages", "Lib.framework"):
+                package = base / name
+                package.mkdir()
+                self.assertEqual(serve.reveal_command(package), ["open", "-R", str(package)],
+                                 name)
+            missing = base / "not-there"
+            self.assertEqual(serve.reveal_command(missing), ["open", "-R", str(missing)])
+
 
 class ReadTest(unittest.TestCase):
     def setUp(self):

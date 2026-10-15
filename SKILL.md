@@ -179,8 +179,9 @@ repos) goes with its own `--clean`. Say in your report that you cleaned up.
 | Generated throwaway material | `/tmp/<short-name>/` | `paths`, or nothing at all |
 
 `paths` needs **absolute** paths (`~` is expanded); the short `~` form is what gets shown.
-The server opens folders and only **reveals** files — and bundles like `*.app` — in the Finder
-rather than launching them,
+The server opens plain folders and only **reveals** files — and packages: any folder with a
+suffix (`*.app`, `*.rtfd`, `*.xcodeproj`, …) or a `Contents/Info.plist` — in the Finder rather
+than launching them,
 and only paths the build froze — otherwise any web page in the browser could talk it into
 opening anything. A path that does not exist yet says so: the data was never created.
 

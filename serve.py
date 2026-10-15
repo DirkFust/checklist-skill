@@ -424,11 +424,13 @@ class Pulse:
 
 def reveal_command(target: pathlib.Path) -> list:
     """Open folders, only reveal files: a click must not launch an application.
-    A bundle is a folder to the file system and an application (or a plugin,
-    a document package) to `open` — so `*.app`, and any folder carrying
-    `Contents/Info.plist`, is revealed like a file."""
-    bundle = target.suffix == ".app" or (target / "Contents" / "Info.plist").is_file()
-    if target.is_dir() and not bundle:
+    A package is a folder to the file system and an application, a plugin or a
+    document to `open` — `.app`, `.rtfd`, `.xcodeproj`, `.pages` and more than
+    anyone can list, most without `Contents/Info.plist`. So only a folder whose
+    name has no suffix and that carries no Info.plist is opened; everything
+    else is revealed like a file."""
+    package = target.suffix != "" or (target / "Contents" / "Info.plist").is_file()
+    if target.is_dir() and not package:
         return ["open", str(target)]
     return ["open", "-R", str(target)]
 
