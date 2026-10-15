@@ -149,7 +149,6 @@ looks right in the spec and is missing from the page all the same.
 
 import argparse
 import base64
-import binascii
 import codecs
 import dataclasses
 import json

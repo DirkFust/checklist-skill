@@ -358,7 +358,7 @@ def pin_setups(state: dict, on_disk: dict) -> dict:
     drop or reorder items — the caller has checked the counts agree.
     """
     items = [{**item, "setup": kept.get("setup")}
-             for item, kept in zip(state["items"], on_disk.get("items", []))]
+             for item, kept in zip(state["items"], on_disk.get("items", []), strict=True)]
     return {**state, "items": items}
 
 
