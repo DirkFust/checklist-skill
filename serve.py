@@ -14,7 +14,23 @@ there is no size limit here, and no reason to shrink anything.
 Two routes lead to test data: whatever the browser can display lives under
 `data/` in the working folder and is linked over `http`. Whatever has to sit in
 the project gets a button that sends `POST /reveal` — the server reveals the path
-in the Finder. Only paths the build froze into `setups.json` are allowed.
+in the Finder. Only paths the build froze into `setups.json` are allowed — a
+setup's `paths` and its `files`.
+
+A setup's files have two more routes, both reading `setups.json` only:
+
+  · `POST /reset {"setup": id}` copies the setup's managed files back from
+    `.pristine/`, where the build left an untouched copy → `{"reset": [names]}`.
+    External files are never written. All copies are checked first; one missing
+    → 409 and nothing is touched.
+  · `GET /peek?setup=<id>&file=<index>` → name, size, encoding, bom, eol
+    (lf | crlf | cr | mixed | none), final_newline, binary, and at most 400
+    `lines`, each with its line end still on it (`truncated` says if more).
+    Decoded with the declared encoding, else UTF-8; what does not decode, or
+    holds NULs, is `binary` and has no lines.
+
+Mutating POSTs carry `X-Checklist: <route>` — `reveal` for /reveal, `reset` for
+/reset — so the header sent for one action never passes for another.
 
 Setups are not the page's to change. `state.json` names each item's setup by id,
 `setups.json` holds what the id stands for; GET fills the setups into the page,
@@ -47,6 +63,7 @@ is lost when it goes: everything was written at save time.
 
 import argparse
 import base64
+import codecs
 import errno
 import hashlib
 import html
@@ -56,12 +73,14 @@ import os
 import pathlib
 import re
 import shlex
+import shutil
 import signal
 import socketserver
 import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import webbrowser
 
 DATA_RE = re.compile(r"^data:(?P<mime>image/[a-z0-9.+-]+);base64,(?P<payload>.*)$", re.S)
@@ -87,6 +106,21 @@ PORT_TRIES = 20
 READ_MARK = ".read"
 # Written by build.py; absent in folders built before setups were frozen.
 SETUPS_FILE = "setups.json"
+# Where build.py writes a spec's test data, and the untouched copy /reset takes
+# it back from.
+DATA_DIR = "data"
+PRISTINE_DIR = ".pristine"
+# A preview, not a viewer: enough to see what a test file looks like.
+PEEK_LINES = 400
+DEFAULT_ENCODING = "utf-8"
+# Longest first: a UTF-32-LE mark starts with the UTF-16-LE one.
+BOMS = {"utf-32-le": codecs.BOM_UTF32_LE, "utf-32-be": codecs.BOM_UTF32_BE,
+        "utf-8": codecs.BOM_UTF8,
+        "utf-16-le": codecs.BOM_UTF16_LE, "utf-16-be": codecs.BOM_UTF16_BE}
+LINE_END_RE = re.compile(r"\r\n|\r|\n")
+# Each line keeps its end, so the page can show which one it is.
+LINE_RE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+")
+EOL_NAMES = {"\n": "lf", "\r\n": "crlf", "\r": "cr"}
 LOOPBACK_NAMES = ("127.0.0.1", "localhost")
 # Never opened at all: the URL has just been handed over and the human may be
 # somewhere else entirely. That silence says nothing, so it gets an hour.
@@ -181,6 +215,52 @@ def inject(state: dict, setups: dict | None) -> dict:
              else item
              for item in state.get("items", [])]
     return {**state, "items": items}
+
+
+def decode(content: bytes, encoding: str, mark: str | None) -> str | None:
+    """The text, or None when it is none: undecodable, or carrying NULs — which
+    UTF-8 lets through, and which no file a human reads has."""
+    try:
+        codec = codecs.lookup(encoding).name
+        text = (content[len(BOMS[codec]):] if mark == codec else content).decode(codec)
+    except (LookupError, UnicodeDecodeError):
+        return None
+    return None if "\x00" in text else text
+
+
+def peek(name: str, content: bytes, encoding: str | None) -> dict:
+    """What a test file looks like inside — the things an editor hides and a
+    test may hinge on: encoding, byte order mark, line ends, the last newline.
+
+    Decoded with the encoding the spec declared, else UTF-8; a BOM is reported
+    whichever it is, and stripped when it belongs to that encoding.
+    """
+    encoding = encoding or DEFAULT_ENCODING
+    mark = next((codec for codec, bom in BOMS.items() if content.startswith(bom)), None)
+    text = decode(content, encoding, mark)
+    result = {"name": name, "size": len(content), "encoding": encoding,
+              "bom": mark is not None, "eol": "none", "final_newline": False,
+              "binary": text is None, "lines": [], "truncated": False}
+    if text is None:
+        return result
+    kinds = {EOL_NAMES[end] for end in LINE_END_RE.findall(text)}
+    lines = LINE_RE.findall(text)
+    return {**result,
+            "eol": kinds.pop() if len(kinds) == 1 else "mixed" if kinds else "none",
+            "final_newline": text.endswith(("\n", "\r")),
+            "lines": lines[:PEEK_LINES], "truncated": len(lines) > PEEK_LINES}
+
+
+def file_location(root: pathlib.Path, entry: dict) -> pathlib.Path | None:
+    """Where a setup's file is. A managed one sits under this folder's data/ —
+    found by name rather than by the frozen path, so a folder that was moved
+    still resets and previews its own files. None for a name that could climb
+    out of there."""
+    if not entry.get("managed"):
+        return pathlib.Path(entry["path"])
+    if not all(SEGMENT_RE.match(part) for part in entry["name"].split("/")):
+        return None
+    return root / DATA_DIR / entry["name"]
 
 
 def pin_setups(state: dict, on_disk: dict) -> dict:
@@ -287,7 +367,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             declared = setups.values()
         else:
             declared = [item.get("setup") or {} for item in read_state(self.root).get("items", [])]
-        return {entry.get("path") for setup in declared for entry in (setup.get("paths") or [])}
+        # A setup's files too, managed or not: the spec's author named them.
+        return {entry.get("path") for setup in declared
+                for entry in [*(setup.get("paths") or []), *(setup.get("files") or [])]}
 
     def body_length(self) -> int | None:
         """The declared body size, or None once the client has been told why not."""
@@ -298,12 +380,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return None
 
     def do_POST(self) -> None:
-        if self.path.split("?", 1)[0] != "/reveal":
-            self.fail(404, "POST /reveal only")
+        route = self.path.split("?", 1)[0].lstrip("/")
+        actions = {"reveal": self.reveal, "reset": self.reset}
+        if route not in actions:
+            self.fail(404, "POST /reveal or /reset only")
             return
         # A header of our own: a foreign page would first have to send a preflight,
-        # and there is none here. Sec-Fetch-Site rules out the rest.
-        if self.headers.get("X-Checklist") != "reveal":
+        # and there is none here. Sec-Fetch-Site rules out the rest. Its value is
+        # the route, so a header sent along for one action does not pass for another.
+        if self.headers.get("X-Checklist") != route:
             self.fail(403, "missing header")
             return
         site = self.headers.get("Sec-Fetch-Site")
@@ -314,10 +399,54 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if length is None:
             return
         try:
-            wanted = json.loads(self.rfile.read(length)).get("path", "")
+            body = json.loads(self.rfile.read(length))
         except json.JSONDecodeError:
             self.fail(400, "not valid JSON")
             return
+        if not isinstance(body, dict):
+            self.fail(400, "expected a JSON object")
+            return
+        actions[route](body)
+
+    def frozen_setup(self, setup_id) -> dict | None:
+        """A setup from setups.json, or None once the client has been told why
+        not. Only frozen ones: the state is the page's to write."""
+        setups = read_setups(self.root)
+        if setups is None:
+            self.fail(404, "this folder was built before setups were frozen — rebuild it")
+            return None
+        if not isinstance(setup_id, str) or setup_id not in setups:
+            self.fail(404, f"no setup {setup_id!r} in this checklist")
+            return None
+        return setups[setup_id]
+
+    def reset(self, body: dict) -> None:
+        """Put a setup's managed files back the way the build wrote them.
+
+        All pristine copies are checked before the first one is copied, so a
+        reset either happens or leaves the files alone — never half of it.
+        """
+        setup = self.frozen_setup(body.get("setup"))
+        if setup is None:
+            return
+        pairs = []
+        for entry in setup.get("files") or []:
+            if not entry.get("managed"):
+                continue
+            target = file_location(self.root, entry)
+            source = self.root / PRISTINE_DIR / entry["name"] if target else None
+            if source is None or not source.is_file():
+                self.fail(409, f"no pristine copy of {entry['name']} — rebuild the folder")
+                return
+            pairs.append((entry["name"], source, target))
+        for _, source, target in pairs:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
+        self.send(200, json.dumps({"reset": [name for name, _, _ in pairs]}).encode("utf-8"),
+                  "application/json; charset=utf-8")
+
+    def reveal(self, body: dict) -> None:
+        wanted = body.get("path", "")
         if wanted not in self.declared_paths():
             self.fail(403, "that path is not in the checklist")
             return
@@ -353,6 +482,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                             .replace("%%FOLDER%%", html.escape(str(self.root))))
             self.send(200, page.encode("utf-8"), "text/html; charset=utf-8")
             return
+        if path == "/peek":
+            self.peek()
+            return
         for folder in SERVED_DIRS:
             prefix = f"/{folder}/"
             if not path.startswith(prefix):
@@ -365,6 +497,28 @@ class Handler(http.server.BaseHTTPRequestHandler):
                       TYPES.get(file.suffix, "application/octet-stream"))
             return
         self.fail(404, "nothing here")
+
+    def peek(self) -> None:
+        """GET /peek?setup=<id>&file=<index> — one of a frozen setup's files,
+        by position, so the page names nothing it was not handed."""
+        query = urllib.parse.parse_qs(self.path.partition("?")[2])
+        setup = self.frozen_setup((query.get("setup") or [None])[0])
+        if setup is None:
+            return
+        files = setup.get("files") or []
+        index = (query.get("file") or [""])[0]
+        if not (index.isascii() and index.isdigit()) or int(index) >= len(files):
+            self.fail(404, f"this setup has no file {index!r}")
+            return
+        entry = files[int(index)]
+        target = file_location(self.root, entry)
+        if target is None or not target.is_file():
+            self.fail(404, f"{entry['path']} does not exist"
+                           + (" — reset the files" if entry.get("managed") else ""))
+            return
+        result = peek(entry["name"], target.read_bytes(), entry.get("encoding"))
+        self.send(200, json.dumps(result, ensure_ascii=False).encode("utf-8"),
+                  "application/json; charset=utf-8")
 
     def do_PUT(self) -> None:
         if self.path.split("?", 1)[0] != "/state":

@@ -32,6 +32,16 @@
   "toggle_state": "Zustand weiterschalten",
   "fold_item": "Diesen Punkt zuklappen",
 
+  "show_file": "Zeigen",
+  "hide_file": "Ausblenden",
+  "reset_files": "Dateien zurücksetzen",
+  "reset_done": "zurückgesetzt ✓",
+  "eol_mixed": "gemischte Zeilenenden",
+  "no_final_newline": "kein Zeilenumbruch am Ende",
+  "binary_file": "binär",
+  "binary_no_preview": "Binärdatei — keine Vorschau.",
+  "peek_truncated": "… hier abgeschnitten",
+
   "save": "Speichern",
   "saving": "Wird gespeichert…",
   "saved": "Gespeichert",

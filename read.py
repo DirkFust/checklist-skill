@@ -32,9 +32,9 @@ a plain rebuild. That is a conversion, not a result, and sets no marker.
 `--json` prints the raw state.
 
 Setups are not in the state any more, only their ids — `setups.json` keeps each
-inline setup exactly as the spec gave it, plus the named `setups` and the
-spec's `launch`, and `--as-spec` puts all of that back in place, with `lang`
-from the state.
+inline setup exactly as the spec gave it, plus the named `setups`, the spec's
+`launch`, `launches` and `data`, and `--as-spec` puts all of that back in place,
+with `lang` from the state.
 Folders built before then still carry the setup object in the state; that is
 what goes back for them.
 """
@@ -209,7 +209,7 @@ def as_spec(state: dict, frozen: dict | None = None) -> dict:
     if meta.get("lang"):
         spec["lang"] = meta["lang"]
     source = (frozen or {}).get("source", {})
-    for key in ("setups", "launch", "launches"):
+    for key in ("setups", "launch", "launches", "data"):
         if key in source:
             spec[key] = source[key]
     for item in state.get("items") or []:

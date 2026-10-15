@@ -32,6 +32,16 @@
   "toggle_state": "Toggle state",
   "fold_item": "Fold this item away",
 
+  "show_file": "Show",
+  "hide_file": "Hide",
+  "reset_files": "Reset files",
+  "reset_done": "reset ✓",
+  "eol_mixed": "mixed line ends",
+  "no_final_newline": "no newline at end",
+  "binary_file": "binary",
+  "binary_no_preview": "Binary file — no preview.",
+  "peek_truncated": "… cut off here",
+
   "save": "Save",
   "saving": "Saving…",
   "saved": "Saved",

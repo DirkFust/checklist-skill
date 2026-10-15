@@ -251,6 +251,27 @@
     color: var(--ink-faint); user-select: all;
   }
   .setup-path .said { font-size: 13px; color: var(--problem); }
+  .setup-path button[disabled] { opacity: .5; cursor: default; }
+  /* A setup's files: what a test reads, with what an editor hides spelled out —
+     encoding, byte order mark, line ends, the missing last newline. */
+  .setup-file code.file-name { color: var(--ink); }
+  /* The two buttons wrap as one, flush right, so every row reads the same. */
+  .file-actions { display: flex; gap: 8px; margin-left: auto; }
+  .badges { display: flex; flex-wrap: wrap; gap: 4px; }
+  .badges:empty { display: none; }
+  .badge {
+    font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 11px;
+    color: var(--ink-soft); background: var(--surface);
+    border: 1px solid var(--line); border-radius: 3px; padding: 1px 6px;
+  }
+  .peek {
+    flex-basis: 100%; margin: 0; max-height: 24em; overflow: auto;
+    font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 12px; tab-size: 4;
+    color: var(--ink); background: var(--surface);
+    border: 1px solid var(--line); border-radius: 3px; padding: 8px 10px;
+  }
+  .peek:empty, .peek[hidden] { display: none; }
+  .peek .ws { color: var(--ink-faint); }
   .cmdline { display: flex; align-items: stretch; gap: 6px; }
   .cmdline code {
     flex: 1; min-width: 0; display: block;
@@ -575,6 +596,21 @@
   }
 
   // A file: link would be dead from an http page; the server does it instead.
+  // Whatever goes wrong is said in `said`.
+  async function reveal(path, said) {
+    said.textContent = "";
+    try {
+      const res = await fetch("reveal", {
+        method: "POST",
+        headers: { "content-type": "application/json", "X-Checklist": "reveal" },
+        body: JSON.stringify({ path }),
+      });
+      if (!res.ok) said.textContent = await res.text();
+    } catch {
+      said.textContent = "{{t.server_not_answering}}";
+    }
+  }
+
   function pathLine(entry) {
     const row = document.createElement("div");
     row.className = "setup-path";
@@ -585,22 +621,151 @@
     said.className = "said";
     const where = document.createElement("code");
     where.textContent = entry.show || entry.path;
+    btn.addEventListener("click", () => reveal(entry.path, said));
+    row.append(btn, where, said);
+    return row;
+  }
 
-    btn.addEventListener("click", async () => {
+  // What an editor hides, drawn in: tab, CR, LF. The badges say the same about
+  // the whole file, so a wrong line end shows before anyone opens the preview.
+  const VISIBLE_END = { "\r\n": "␍¬", "\n": "¬", "\r": "␍" };
+  const VISIBLE_TAB = "→";
+  const LINE_END = /(\r\n|\r|\n)$/;
+  const EOL_BADGE = { crlf: "CRLF", cr: "CR", mixed: "{{t.eol_mixed}}" };
+  const PLAIN_ENCODING = /^utf-?8$/i;
+  const RESET_SHOWN_MS = 1500;
+
+  function faint(text) {
+    const span = document.createElement("span");
+    span.className = "ws";
+    span.textContent = text;
+    return span;
+  }
+
+  function badgesOf(peek) {
+    const out = [];
+    if (!PLAIN_ENCODING.test(peek.encoding)) out.push(peek.encoding);
+    if (peek.bom) out.push("BOM");
+    if (peek.binary) return [...out, "{{t.binary_file}}"];
+    if (EOL_BADGE[peek.eol]) out.push(EOL_BADGE[peek.eol]);
+    if (peek.size && !peek.final_newline) out.push("{{t.no_final_newline}}");
+    return out;
+  }
+
+  // Text nodes only: the file is foreign input. The tab stays in after its
+  // arrow, so columns still line up the way the file means them to.
+  function visibleLine(line, into) {
+    const end = (line.match(LINE_END) || [""])[0];
+    const body = end ? line.slice(0, -end.length) : line;
+    body.split("\t").forEach((part, n) => {
+      if (n) into.append(faint(VISIBLE_TAB + "\t"));
+      into.append(part);
+    });
+    if (end) into.append(faint(VISIBLE_END[end]));
+    into.append("\n");
+  }
+
+  // One of a setup's files: its name, badges from /peek, a preview to unfold and
+  // a reveal button. `load` fetches again — after a reset the file has changed.
+  function fileRow(setupId, file, index) {
+    const row = document.createElement("div");
+    row.className = "setup-path setup-file";
+    const name = document.createElement("code");
+    name.className = "file-name";
+    name.textContent = file.name;
+    const badges = document.createElement("span");
+    badges.className = "badges";
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.textContent = "{{t.show_file}}";
+    const show = document.createElement("button");
+    show.type = "button";
+    show.textContent = "{{t.reveal_in_finder}}";
+    const said = document.createElement("span");
+    said.className = "said";
+    const view = document.createElement("pre");
+    view.className = "peek";
+    view.hidden = true;
+    let peek = null;
+
+    function draw() {
+      view.textContent = "";
+      if (!peek) return;
+      if (peek.binary) {
+        view.append(faint("{{t.binary_no_preview}}"));
+        return;
+      }
+      peek.lines.forEach((line) => visibleLine(line, view));
+      if (peek.truncated) view.append(faint("{{t.peek_truncated}}"));
+    }
+
+    async function load() {
       said.textContent = "";
+      peek = null;
       try {
-        const res = await fetch("reveal", {
-          method: "POST",
-          headers: { "content-type": "application/json", "X-Checklist": "reveal" },
-          body: JSON.stringify({ path: entry.path }),
-        });
-        if (!res.ok) said.textContent = await res.text();
+        const res = await fetch(
+          "peek?setup=" + encodeURIComponent(setupId) + "&file=" + index, { cache: "no-store" });
+        if (res.ok) peek = await res.json(); else said.textContent = await res.text();
       } catch {
         said.textContent = "{{t.server_not_answering}}";
       }
-    });
+      badges.textContent = "";
+      if (peek) badgesOf(peek).forEach((text) => {
+        const badge = document.createElement("span");
+        badge.className = "badge";
+        badge.textContent = text;
+        badges.append(badge);
+      });
+      if (!view.hidden) draw();
+    }
 
-    row.append(btn, where, said);
+    toggle.addEventListener("click", () => {
+      view.hidden = !view.hidden;
+      toggle.textContent = view.hidden ? "{{t.show_file}}" : "{{t.hide_file}}";
+      if (!view.hidden) draw();
+    });
+    show.addEventListener("click", () => reveal(file.path, said));
+    const actions = document.createElement("span");
+    actions.className = "file-actions";
+    actions.append(toggle, show);
+    row.append(name, badges, actions, said, view);
+    load();
+    return { row, load };
+  }
+
+  // Puts the managed files back the way the build wrote them, then shows the
+  // rows what they hold now.
+  function resetLine(setupId, rows) {
+    const row = document.createElement("div");
+    row.className = "setup-path";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = "{{t.reset_files}}";
+    const said = document.createElement("span");
+    said.className = "said";
+    btn.addEventListener("click", async () => {
+      said.textContent = "";
+      btn.disabled = true;
+      try {
+        const res = await fetch("reset", {
+          method: "POST",
+          headers: { "content-type": "application/json", "X-Checklist": "reset" },
+          body: JSON.stringify({ setup: setupId }),
+        });
+        if (!res.ok) {
+          said.textContent = await res.text();
+          return;
+        }
+        btn.textContent = "{{t.reset_done}}";
+        setTimeout(() => { btn.textContent = "{{t.reset_files}}"; }, RESET_SHOWN_MS);
+        rows.forEach((line) => line.load());
+      } catch {
+        said.textContent = "{{t.server_not_answering}}";
+      } finally {
+        btn.disabled = false;
+      }
+    });
+    row.append(btn, said);
     return row;
   }
 
@@ -658,6 +823,12 @@
     prose(setup.text, body);
     (setup.commands || []).forEach((command) => body.append(commandLine(command)));
     (setup.paths || []).forEach((entry) => body.append(pathLine(entry)));
+    // /peek and /reset go by setup id; a folder built before ids has no files.
+    const rows = setup.id ? (setup.files || []).map((file, n) => fileRow(setup.id, file, n)) : [];
+    rows.forEach((line) => body.append(line.row));
+    if (rows.length && setup.files.some((file) => file.managed)) {
+      body.append(resetLine(setup.id, rows));
+    }
 
     const links = (setup.links || []).filter((link) => link && SAFE_URL.test(link.url || ""));
     if (links.length) {

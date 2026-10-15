@@ -108,3 +108,15 @@ class RunningServer:
     def reveal(self, path: str):
         return self.request("POST", "/reveal", json.dumps({"path": path}).encode("utf-8"),
                             {"Content-Type": "application/json", "X-Checklist": "reveal"})
+
+    def reset(self, setup_id: str, headers: dict | None = None):
+        """POST /reset; `headers` replaces the guard header the page sends."""
+        sent = {"Content-Type": "application/json",
+                **({"X-Checklist": "reset"} if headers is None else headers)}
+        return self.request("POST", "/reset", json.dumps({"setup": setup_id}).encode("utf-8"),
+                            sent)
+
+    def peek(self, setup_id: str, index) -> tuple[int, dict | bytes]:
+        """GET /peek; the parsed JSON on 200, the raw body otherwise."""
+        status, body = self.request("GET", f"/peek?setup={setup_id}&file={index}")
+        return status, (json.loads(body) if status == 200 else body)

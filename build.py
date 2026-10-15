@@ -2,10 +2,19 @@
 """Turns a checklist spec into a working folder for serve.py.
 
     build.py spec.json folder [--shell shell.html] [--lang en] [--merge | --force]
+    build.py --clean folder
 
-The folder gets `template.html`, `state.json` and `setups.json`. `%%STATE%%`
-stays open in the template — `serve.py` fills the state in on every request and
-takes it back via PUT.
+The folder gets `template.html`, `state.json` and `setups.json`, and with a
+`data` in the spec the test files under `data/` plus their untouched twins under
+`.pristine/` — what the page's reset copies back. `%%STATE%%` stays open in the
+template — `serve.py` fills the state in on every request and takes it back via
+PUT.
+
+Every build rewrites the test data, `--merge` included: what a round of testing
+did to it is not a result. Files an earlier build wrote that the spec no longer
+names go; anything else in `data/` (a script's output) stays. `--clean` removes
+`data/` and `.pristine/` whole and touches nothing else — state, images,
+setups and template stay.
 
 A folder a human has saved into (`meta.folder` in its state) holds results, and
 a rebuild would wipe them — so that aborts. `--merge` hands each new item the
@@ -17,8 +26,10 @@ writes back, and a setup names paths the server will reveal and commands it
 will run — so the page must not be able to change them. `state.json` items carry
 only a setup id (`item-NN` for an inline setup, 1-based; the name for a named
 one); `setups.json` holds the resolved setup per id under `setups`, and under
-`source` what the spec gave — `inline` setups by id, `setups` and `launch` as
-written — so `read.py --as-spec` can hand it back to this script unchanged.
+`source` what the spec gave — `inline` setups by id, `setups`, `launch`,
+`launches` and `data` as written — so `read.py --as-spec` can hand it back to
+this script unchanged. A setup's `files` are frozen resolved as well: name,
+absolute path, whether the build manages it, and a declared encoding.
 
 Project config: `checklist.json`, the first one found walking up from the
 folder's parent; the walk stops at a directory with `.git` (inclusive) or at
@@ -66,6 +77,17 @@ Spec format:
       },                                  //   per name, field by field over the
                                           //   project's. A setup chooses one;
                                           //   one no setup chooses only warns.
+      "data": {                           // optional: test files, written to
+        "notes.txt": "verbatim UTF-8\\n", //   <folder>/data/<name>. Name: /-separated
+        "case-1/win.txt": {               //   segments of letters, digits, . _ -
+          "text": "a\\nb\\n",               //   \\n becomes the eol (lf | crlf | cr);
+          "encoding": "utf-16-le",        //   any Python text codec, default utf-8;
+          "eol": "crlf", "bom": true},    //   bom: utf-8 / utf-16-le|be / utf-32-le|be
+                                          //   (bare utf-16/utf-32 abort: byte order)
+        "real.pdf": {"copy": "~/x/real.pdf"},     // copied at build time
+        "tiny.png": {"base64": "iVBORw0KGgo…"}    // raw bytes
+      },
+
       "items": [
         {"title": "What to do",
          "detail": "Steps and expectation.\\nSecond paragraph.",
@@ -88,6 +110,11 @@ Spec format:
            "paths": [{"label": "Test data",           //   button: reveal in Finder
                       "path": "~/dev/x/.manual-tests/case-1"}],
            "collapsed": false,           //   true starts folded
+           "files": ["case-1/win.txt",   //   a name from data: managed — shown,
+                     "~/dev/x/in.csv"],  //   previewed, reset; an absolute or ~
+                                          //   path: shown and previewed, never
+                                          //   written. Anything else aborts.
+                                          //   {files} in launch = all of them.
            "launch": {"run": "make dev"} //   over the spec's launch, see above;
                                           //   or "preview" (a profile), or
                                           //   {"profile": "preview", …overrides}.
@@ -113,17 +140,36 @@ looks right in the spec and is missing from the page all the same.
 """
 
 import argparse
+import base64
+import binascii
+import codecs
 import dataclasses
 import json
 import pathlib
 import re
 import shlex
+import shutil
 import sys
 
 STATES = {"open", "ok", "problem", "skipped"}
 SETUPS_FILE = "setups.json"
 PROJECT_CONFIG = "checklist.json"
 DATA_DIR = "data"
+# The untouched copy of every file the build wrote into data/ — what /reset
+# copies back, and the record of which files there are the build's own.
+PRISTINE_DIR = ".pristine"
+# One segment of a data name; the same rule serve.py applies to what it serves.
+DATA_SEGMENT_RE = re.compile(r"^[0-9a-zA-Z][0-9a-zA-Z._-]*$")
+DEFAULT_ENCODING = "utf-8"
+EOLS = {"lf": "\n", "crlf": "\r\n", "cr": "\r"}
+# By codec name as codecs.lookup spells it. The bare utf-16/utf-32 are missing on
+# purpose: their byte order is whatever this machine has, and Python writes a BOM
+# for them even unasked — see AMBIGUOUS_ENCODINGS.
+BOMS = {"utf-8": codecs.BOM_UTF8,
+        "utf-16-le": codecs.BOM_UTF16_LE, "utf-16-be": codecs.BOM_UTF16_BE,
+        "utf-32-le": codecs.BOM_UTF32_LE, "utf-32-be": codecs.BOM_UTF32_BE}
+AMBIGUOUS_ENCODINGS = {"utf-16", "utf-32"}
+DATA_TEXT_KEYS = {"text", "encoding", "eol", "bom"}
 DEFAULT_LANG = "en"
 # It names a file under strings/, so nothing that could climb out of there.
 LANG_RE = re.compile(r"^[a-z]{2,3}([_-][A-Za-z0-9]+)?$")
@@ -151,9 +197,9 @@ MERGED_FIELDS = ("state", "note", "images", "collapsed")
 # content is missing anyway. So what is allowed is written down here, and
 # anything else aborts the build.
 SPEC_KEYS = {"title", "eyebrow", "heading", "standfirst", "items", "notes", "autofold",
-             "lang", "setups", "launch", "launches"}
+             "lang", "setups", "launch", "launches", "data"}
 ITEM_KEYS = {"title", "detail", "setup", "state", "collapsed", "note", "images"}
-SETUP_KEYS = {"label", "text", "commands", "links", "paths", "collapsed", "launch"}
+SETUP_KEYS = {"label", "text", "commands", "links", "paths", "collapsed", "launch", "files"}
 LAUNCH_KEYS = {"cwd", *LAUNCH_COMMANDS, "url", "ready_timeout"}
 # Only a setup chooses a profile; a profile or a default choosing one would chain.
 PROFILE_KEY = "profile"
@@ -162,7 +208,8 @@ PROJECT_KEYS = {"launch", "launches", "lang"}
 HINTS = {"notes": "note", "comment": "note", "remark": "note",
          "status": "state", "image": "images", "description": "detail",
          "body": "detail", "steps": "items", "command": "commands",
-         "link": "links", "path": "paths", "prerequisites": "setup"}
+         "link": "links", "path": "paths", "prerequisites": "setup",
+         "file": "files"}
 
 
 def only(raw: dict, allowed: set, where: str) -> None:
@@ -342,14 +389,162 @@ def find_project(start: pathlib.Path, stop: pathlib.Path) -> Project:
 
 
 @dataclasses.dataclass(frozen=True)
+class DataFile:
+    """One entry of the spec's `data`, settled into the bytes it is written as."""
+    content: bytes
+    encoding: str | None        # the codec's own name if the entry declared one
+
+
+def data_name(name, where: str) -> str:
+    """A path under data/ that cannot climb out of it or hide in it."""
+    if not isinstance(name, str) or not all(DATA_SEGMENT_RE.match(part)
+                                            for part in name.split("/")):
+        sys.exit(f"{where}: a data name is /-separated segments of letters, digits, "
+                 f". _ - (each starting with a letter or digit), not {name!r}")
+    return name
+
+
+def encoded_text(entry: dict, where: str) -> DataFile:
+    """`{"text", "encoding"?, "eol"?, "bom"?}` — the file exactly as a test
+    needs it, down to the line ends and the byte order mark."""
+    only(entry, DATA_TEXT_KEYS, where)
+    text, encoding = entry["text"], entry.get("encoding", DEFAULT_ENCODING)
+    eol, bom = entry.get("eol", "lf"), entry.get("bom", False)
+    if not isinstance(text, str):
+        sys.exit(f"{where}.text must be text")
+    if not isinstance(eol, str) or eol not in EOLS:
+        sys.exit(f"{where}.eol is one of {', '.join(EOLS)}, not {eol!r}")
+    if type(bom) is not bool:
+        sys.exit(f"{where}.bom is true or false, not {bom!r}")
+    if not isinstance(encoding, str):
+        sys.exit(f"{where}.encoding must be a codec name like 'utf-16-le', not {encoding!r}")
+    try:
+        codec = codecs.lookup(encoding).name
+    except LookupError:
+        sys.exit(f"{where}: unknown encoding {encoding!r}")
+    if codec in AMBIGUOUS_ENCODINGS:
+        sys.exit(f"{where}: {encoding!r} leaves the byte order to this machine, and Python "
+                 f"writes a BOM for it unasked — say {codec}-le or {codec}-be")
+    if bom and codec not in BOMS:
+        sys.exit(f"{where}: bom goes with {', '.join(BOMS)} — not {encoding!r}")
+    try:
+        content = text.replace("\n", EOLS[eol]).encode(codec)
+    except UnicodeEncodeError as error:
+        sys.exit(f"{where}: {encoding} cannot hold {error.object[error.start:error.end]!r}")
+    except LookupError:                 # a codec, but not for text: base64, rot13, …
+        sys.exit(f"{where}: {encoding!r} is no text encoding")
+    return DataFile((BOMS[codec] if bom else b"") + content,
+                    codec if "encoding" in entry else None)
+
+
+def copied(entry: dict, where: str) -> DataFile:
+    """`{"copy": path}` — read now, so the checklist keeps working when the
+    original moves or changes."""
+    only(entry, {"copy"}, where)
+    source = entry["copy"]
+    path = pathlib.Path(source).expanduser() if isinstance(source, str) else None
+    if path is None or not path.is_absolute():
+        sys.exit(f"{where}.copy needs an absolute or ~ path, not {source!r}")
+    if not path.is_file():
+        sys.exit(f"{where}: no file to copy at {path}")
+    return DataFile(path.read_bytes(), None)
+
+
+def decoded(entry: dict, where: str) -> DataFile:
+    """`{"base64": …}` — bytes no text form can spell."""
+    only(entry, {"base64"}, where)
+    try:
+        return DataFile(base64.b64decode(entry["base64"], validate=True), None)
+    except (TypeError, ValueError):     # binascii.Error is a ValueError
+        sys.exit(f"{where}.base64 does not decode")
+
+
+DATA_FORMS = {"text": encoded_text, "copy": copied, "base64": decoded}
+
+
+def data_entry(entry, where: str) -> DataFile:
+    if isinstance(entry, str):
+        return DataFile(entry.encode("utf-8"), None)
+    forms = [form for form in DATA_FORMS if isinstance(entry, dict) and form in entry]
+    if len(forms) != 1:
+        sys.exit(f"{where}: an entry is text, or an object with exactly one of "
+                 f"{', '.join(DATA_FORMS)}")
+    return DATA_FORMS[forms[0]](entry, where)
+
+
+def data_files(raw) -> dict:
+    """The spec's `data` by name, every entry already turned into bytes — so a
+    missing copy source or a bad encoding aborts before anything is written."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        sys.exit("spec: data must be an object, name -> entry")
+    files = {data_name(name, "data"): data_entry(entry, f"data.{name}")
+             for name, entry in raw.items()}
+    folders = {"/".join(name.split("/")[:depth])
+               for name in files for depth in range(1, name.count("/") + 1)}
+    clash = sorted(folders & set(files))
+    if clash:
+        sys.exit(f"data: {', '.join(clash)} cannot be a file and a folder at once")
+    return files
+
+
+def remove_built(folder: pathlib.Path, base: pathlib.Path, name: str) -> None:
+    """A file an earlier build wrote, and the folders that leaves empty."""
+    target = base / name
+    target.unlink(missing_ok=True)
+    for parent in target.parents:
+        if parent == folder or not parent.is_dir() or any(parent.iterdir()):
+            return
+        parent.rmdir()
+
+
+def write_data(folder: pathlib.Path, files: dict) -> None:
+    """data/ and its pristine twin, as `files` says.
+
+    A file the previous build wrote — it has a pristine copy — that `files` no
+    longer names goes from both. Anything else in data/ stays: a script may have
+    generated it, and it is not the build's to remove.
+    """
+    data, pristine = folder / DATA_DIR, folder / PRISTINE_DIR
+    built = [path.relative_to(pristine).as_posix()
+             for path in pristine.rglob("*") if path.is_file()] if pristine.is_dir() else []
+    for name in built:
+        if name not in files:
+            for base in (data, pristine):
+                remove_built(folder, base, name)
+    for name, file in files.items():
+        for base in (data, pristine):
+            target = base / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(file.content)
+
+
+def clean(folder: pathlib.Path) -> list:
+    """--clean: the test data goes, the results stay. Returns what it removed."""
+    removed = []
+    for path in (folder / DATA_DIR, folder / PRISTINE_DIR):
+        if path.is_symlink():
+            path.unlink()               # the link, never what it points to
+        elif path.is_dir():
+            shutil.rmtree(path)
+        else:
+            continue
+        removed.append(path)
+    return removed
+
+
+@dataclasses.dataclass(frozen=True)
 class LaunchBase:
     """What every setup's launch starts from: the default levels below it
     (project, then spec), the profiles it may choose (project and spec already
-    merged per name), and the places its defaults and placeholders point to."""
+    merged per name), and the places its defaults and placeholders point to —
+    the data dir, and the files the spec's `data` puts there, by name."""
     layers: tuple
     root: pathlib.Path
     data: pathlib.Path
     profiles: dict = dataclasses.field(default_factory=dict)
+    files: dict = dataclasses.field(default_factory=dict)
 
 
 def merged_profiles(project: dict, spec: dict) -> dict:
@@ -459,6 +654,7 @@ def setup_of(setup, where: str, base: LaunchBase) -> dict | None:
         show = f"~/{full.relative_to(home)}" if full.is_relative_to(home) else str(full)
         paths.append({"label": entry.get("label", ""), "path": str(full), "show": show})
 
+    files = setup_files(setup.get("files"), base, where)
     profile, own_launch = setup_launch(setup.get("launch"), f"{where}, setup.launch")
     return {
         "label": setup.get("label", ""),
@@ -467,10 +663,38 @@ def setup_of(setup, where: str, base: LaunchBase) -> dict | None:
         "commands": list(commands),
         "links": [{"label": link.get("label", ""), "url": link["url"]} for link in links],
         "paths": paths,
-        # No setup names files yet, so `{files}` stands for nothing; the list
-        # goes in here once setups carry `files`.
-        "launch": resolve_launch(base, profile, own_launch, [], where),
+        "files": files,
+        "launch": resolve_launch(base, profile, own_launch,
+                                 [file["path"] for file in files], where),
     }
+
+
+def setup_files(raw, base: LaunchBase, where: str) -> list:
+    """A setup's `files`: a name from `data` is a managed file under data/ —
+    written by the build, put back by a reset. An absolute or `~` path is
+    somebody else's file: shown and revealed, never written. Anything else is
+    most likely a data name with a typo, so it aborts.
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or not all(isinstance(name, str) and name for name in raw):
+        sys.exit(f"{where}: setup.files must be a list of names from data or absolute paths")
+    files = []
+    for name in raw:
+        if name in base.files:
+            entry = {"name": name, "path": str(base.data / name), "managed": True}
+            if base.files[name].encoding:
+                entry["encoding"] = base.files[name].encoding
+        elif name.startswith(("/", "~")):
+            path = pathlib.Path(name).expanduser()
+            if not path.is_absolute():
+                sys.exit(f"{where}: setup.files cannot place {name!r}")
+            entry = {"name": name, "path": str(path), "managed": False}
+        else:
+            sys.exit(f"{where}: setup.files names {name!r}, which is neither in data nor an "
+                     f"absolute path — data has: {', '.join(sorted(base.files)) or 'nothing'}")
+        files.append(entry)
+    return files
 
 
 def named_setups(raw, base: LaunchBase) -> dict | None:
@@ -540,17 +764,20 @@ def frame(shell: str, spec: dict, faces: str, table: dict, lang: str) -> str:
 
 
 def document(spec: dict, folder: pathlib.Path, lang: str = DEFAULT_LANG,
-             project: Project | None = None) -> tuple[dict, dict]:
-    """The initial state and the frozen setups it refers to by id."""
+             project: Project | None = None, data: dict | None = None) -> tuple[dict, dict]:
+    """The initial state and the frozen setups it refers to by id. `data` is
+    the spec's, already through data_files — read from the spec if not given."""
     only(spec, SPEC_KEYS, "spec")
     if not isinstance(spec.get("items"), list) or not spec["items"]:
         sys.exit("spec: items must be a non-empty list")
     folder = folder.resolve()
     project = project or Project(folder.parent, {}, None)
+    if data is None:
+        data = data_files(spec.get("data"))
     spec_profiles = launch_profiles(spec.get("launches"), "spec, launches")
     base = LaunchBase((project.launch, launch_layer(spec.get("launch"), "spec, launch")),
                       project.root, folder / DATA_DIR,
-                      merged_profiles(project.launches, spec_profiles))
+                      merged_profiles(project.launches, spec_profiles), data)
     named = named_setups(spec.get("setups"), base)
 
     items = []
@@ -608,7 +835,7 @@ def document(spec: dict, folder: pathlib.Path, lang: str = DEFAULT_LANG,
                                          *inline_sources.values()])
     # Only what the spec gave, so --as-spec does not invent keys it never had.
     source = {"inline": inline_sources}
-    for key in ("setups", "launch", "launches"):
+    for key in ("setups", "launch", "launches", "data"):
         if spec.get(key) is not None:
             source[key] = spec[key]
     return state, {"setups": resolved_setups, "source": source}
@@ -701,8 +928,10 @@ def build(spec: dict, shell: str, faces: str, table: dict, lang: str,
                  f"ticks and notes.\n  --merge carries them over to items of the "
                  f"same title, --force overwrites them.")
     # Everything that can abort runs before the first write, so a bad spec
-    # leaves the folder as it was.
-    state, frozen = document(spec, folder, lang, project)
+    # leaves the folder as it was — the test data included, read and encoded
+    # here in full.
+    data = data_files(spec.get("data"))
+    state, frozen = document(spec, folder, lang, project, data)
     if previous is not None:
         state = merge(state, previous)
     template = frame(shell, spec, faces, table, lang)
@@ -712,15 +941,19 @@ def build(spec: dict, shell: str, faces: str, table: dict, lang: str,
         json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     (folder / SETUPS_FILE).write_text(
         json.dumps(frozen, ensure_ascii=False, indent=2), encoding="utf-8")
+    # Every build, --merge included, puts the test data back as the spec says:
+    # whatever a previous round of testing did to it is not a result.
+    write_data(folder, data)
     # A rebuild opens a fresh round of ticking, so an earlier read is spent —
     # otherwise a serve.py on this folder would time itself out on stale news.
     (folder / ".read").unlink(missing_ok=True)
 
 
 def main() -> None:
-    p = argparse.ArgumentParser()
+    p = argparse.ArgumentParser(usage="%(prog)s spec folder [options] | --clean folder")
     p.add_argument("spec")
-    p.add_argument("out", help="working folder")
+    # Optional only so `--clean folder` needs no spec; a build checks it below.
+    p.add_argument("out", nargs="?", help="working folder")
     p.add_argument("--shell", default=str(pathlib.Path(__file__).with_name("shell.html")))
     p.add_argument("--fonts", default=str(pathlib.Path(__file__).with_name("fonts.css")),
                    help="inlined webfaces; regenerate with refresh-fonts.py")
@@ -733,8 +966,20 @@ def main() -> None:
                               "images over to items of the same title")
     rebuild.add_argument("--force", dest="rebuild", action="store_const", const=REBUILD_FORCE,
                          help="rebuild a saved folder, discarding what was saved")
+    rebuild.add_argument("--clean", action="store_true",
+                         help="remove the folder's data/ and .pristine/ and stop; the "
+                              "results, images and template stay")
     p.set_defaults(rebuild=REBUILD_REFUSE)
     a = p.parse_args()
+
+    if a.clean:
+        folder = pathlib.Path(a.out or a.spec).expanduser().resolve()
+        removed = clean(folder)
+        print("removed " + ", ".join(str(path) for path in removed) if removed
+              else f"{folder}: no test data to remove")
+        return
+    if a.out is None:
+        p.error("the working folder is missing")
 
     spec = json.loads(pathlib.Path(a.spec).read_text(encoding="utf-8"))
     if not isinstance(spec, dict):
