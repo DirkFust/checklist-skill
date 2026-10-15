@@ -46,10 +46,9 @@ import json
 import pathlib
 import sys
 
+from workfolder import READ_MARK, SETUPS_FILE
+
 TOKEN = {"open": "[ ]", "ok": "[x]", "problem": "[!]", "skipped": "[-]"}
-READ_MARK = ".read"
-# Written by build.py beside state.json; absent in folders built before it.
-SETUPS_FILE = "setups.json"
 # What a setup out of a page-written state must not carry into a spec.
 UNTRUSTED_SETUP_KEYS = ("launch", "files")
 

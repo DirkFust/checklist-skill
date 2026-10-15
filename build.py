@@ -165,24 +165,15 @@ import stat
 import sys
 import urllib.parse
 
+from workfolder import (BOMS, DATA_DIR, DEFAULT_ENCODING, PRISTINE_DIR, READ_MARK, SEGMENT_RE,
+                        SETUPS_FILE, contained, replace_file)
+
 STATES = {"open", "ok", "problem", "skipped"}
-SETUPS_FILE = "setups.json"
 PROJECT_CONFIG = "checklist.json"
-DATA_DIR = "data"
-# The untouched copy of every file the build wrote into data/ — what /reset
-# copies back, and the record of which files there are the build's own.
-PRISTINE_DIR = ".pristine"
-# One segment of a data name; the same rule serve.py applies to what it serves.
-DATA_SEGMENT_RE = re.compile(r"^[0-9a-zA-Z][0-9a-zA-Z._-]*$")
-DEFAULT_ENCODING = "utf-8"
 EOLS = {"lf": "\n", "crlf": "\r\n", "cr": "\r"}
 LINE_END_RE = re.compile(r"\r\n|\r")
-# By codec name as codecs.lookup spells it. The bare utf-16/utf-32 are missing on
-# purpose: their byte order is whatever this machine has, and Python writes a BOM
-# for them even unasked — see AMBIGUOUS_ENCODINGS.
-BOMS = {"utf-8": codecs.BOM_UTF8,
-        "utf-16-le": codecs.BOM_UTF16_LE, "utf-16-be": codecs.BOM_UTF16_BE,
-        "utf-32-le": codecs.BOM_UTF32_LE, "utf-32-be": codecs.BOM_UTF32_BE}
+# Not in BOMS: their byte order is whatever this machine has, and Python writes
+# a BOM for them even unasked.
 AMBIGUOUS_ENCODINGS = {"utf-16", "utf-32"}
 DATA_TEXT_KEYS = {"text", "encoding", "eol", "bom"}
 DEFAULT_LANG = "en"
@@ -447,7 +438,7 @@ class DataFile:
 
 def data_name(name, where: str) -> str:
     """A path under data/ that cannot climb out of it or hide in it."""
-    if not isinstance(name, str) or not all(DATA_SEGMENT_RE.match(part)
+    if not isinstance(name, str) or not all(SEGMENT_RE.match(part)
                                             for part in name.split("/")):
         sys.exit(f"{where}: a data name is /-separated segments of letters, digits, "
                  f". _ - (each starting with a letter or digit), not {name!r}")
@@ -585,10 +576,7 @@ def write_data(folder: pathlib.Path, files: dict) -> None:
             remove_built(folder, base, name)
     for target, content in targets:
         target.parent.mkdir(parents=True, exist_ok=True)
-        # A fresh file rather than a write into the old one: a hard link would
-        # carry the write to its other name, outside the folder.
-        target.unlink(missing_ok=True)
-        target.write_bytes(content)
+        replace_file(target, content)
 
 
 def data_target(base: pathlib.Path, name: str, leaving: set) -> pathlib.Path:
@@ -598,10 +586,10 @@ def data_target(base: pathlib.Path, name: str, leaving: set) -> pathlib.Path:
     in the way; `leaving` is what an earlier build wrote and this one removes,
     so a file and a folder of the same name may trade places between builds."""
     home = base.parent.resolve() / base.name
-    target = home / name
-    if home.is_symlink() or target.is_symlink() or not target.parent.resolve().is_relative_to(home):
-        sys.exit(f"{target} is a symlink or leads out of {home} — the build will not write "
-                 f"through it; remove the link and build again")
+    target = contained(base, name)
+    if target is None:
+        sys.exit(f"{home / name} is a symlink or leads out of {home} — the build will not "
+                 f"write through it; remove the link and build again")
     if target.is_dir():
         inside = [path for path in target.rglob("*") if not path.is_dir()]
         if not inside or not all(path in leaving for path in inside):
@@ -1061,7 +1049,7 @@ def build(spec: dict, shell: str, faces: str, table: dict, lang: str,
         json.dumps(frozen, ensure_ascii=False, indent=2), encoding="utf-8")
     # A rebuild opens a fresh round of ticking, so an earlier read is spent —
     # otherwise a serve.py on this folder would time itself out on stale news.
-    (folder / ".read").unlink(missing_ok=True)
+    (folder / READ_MARK).unlink(missing_ok=True)
 
 
 def main() -> None:

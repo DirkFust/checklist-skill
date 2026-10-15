@@ -118,12 +118,12 @@ import traceback
 import urllib.parse
 import webbrowser
 
+from workfolder import (BOMS, DATA_DIR, DEFAULT_ENCODING, PRISTINE_DIR, READ_MARK, SEGMENT_RE,
+                        SETUPS_FILE, contained, replace_file)
+
 DATA_RE = re.compile(r"^data:(?P<mime>image/[a-z0-9.+-]+);base64,(?P<payload>.*)$", re.S)
 # Only self-made names get swept — whatever a human puts beside them stays.
 OWNED_RE = re.compile(r"^[0-9a-f]{12}\.[a-z0-9]+$")
-# One path segment. Subfolders under `data/` are fine — each segment has to
-# look like this, and the result still has to sit inside the served folder.
-SEGMENT_RE = re.compile(r"^[0-9a-zA-Z][0-9a-zA-Z._-]*$")
 # Attachments land in `images/`, browsable test data in `data/`. The German names
 # are still served so checklists built before the rename keep their pictures.
 SHOTS = "images"
@@ -140,21 +140,8 @@ MAX_POST_BODY = 64 * 1024
 # and the write.
 LOCK = threading.RLock()
 PORT_TRIES = 20
-# read.py drops this beside state.json once it has taken the results.
-READ_MARK = ".read"
-# Written by build.py; absent in folders built before setups were frozen.
-SETUPS_FILE = "setups.json"
-# Where build.py writes a spec's test data, and the untouched copy /reset takes
-# it back from.
-DATA_DIR = "data"
-PRISTINE_DIR = ".pristine"
 # A preview, not a viewer: enough to see what a test file looks like.
 PEEK_LINES = 400
-DEFAULT_ENCODING = "utf-8"
-# Longest first: a UTF-32-LE mark starts with the UTF-16-LE one.
-BOMS = {"utf-32-le": codecs.BOM_UTF32_LE, "utf-32-be": codecs.BOM_UTF32_BE,
-        "utf-8": codecs.BOM_UTF8,
-        "utf-16-le": codecs.BOM_UTF16_LE, "utf-16-be": codecs.BOM_UTF16_BE}
 # The encodings that have a byte order mark, by codecs.lookup's spelling.
 UNICODE_CODECS = ("utf-8", "utf-16", "utf-32")
 LINE_END_RE = re.compile(r"\r\n|\r|\n")
@@ -331,26 +318,11 @@ def peek(name: str, content: bytes, encoding: str | None) -> dict:
             "lines": lines[:PEEK_LINES], "truncated": len(lines) > PEEK_LINES}
 
 
-def contained(base: pathlib.Path, name: str) -> pathlib.Path | None:
-    """`base/name` if it stays inside `base`, else None: a name that could
-    climb out, a file that is a symlink, a folder on the way (or `base`
-    itself) that resolves elsewhere. A reset writes there, so a link planted
-    under data/ would otherwise have it overwrite whatever the link points at.
-    """
-    if not all(SEGMENT_RE.match(part) for part in name.split("/")):
-        return None
-    home = base.parent.resolve() / base.name
-    path = home / name
-    if home.is_symlink() or path.is_symlink() or not path.parent.resolve().is_relative_to(home):
-        return None
-    return path
-
-
 def file_location(root: pathlib.Path, entry: dict) -> pathlib.Path | None:
     """Where a setup's file is. A managed one sits under this folder's data/ —
     found by name rather than by the frozen path, so a folder that was moved
     still resets and previews its own files. None for a managed one that is
-    not safely in there (see `contained`)."""
+    not safely in there (see `workfolder.contained`): a reset writes there."""
     if not entry.get("managed"):
         return pathlib.Path(entry["path"])
     return contained(root / DATA_DIR, entry["name"])
@@ -928,10 +900,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             pairs.append((entry["name"], source, target))
         for _, source, target in pairs:
             target.parent.mkdir(parents=True, exist_ok=True)
-            # A fresh file rather than a write into the old one: a hard link
-            # would carry the write to its other name, outside data/.
-            target.unlink(missing_ok=True)
-            target.write_bytes(source.read_bytes())
+            replace_file(target, source.read_bytes())
         self.send_json(200, {"reset": [name for name, _, _ in pairs]})
 
     def launchable(self, setup_id) -> dict | None:
@@ -979,7 +948,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
     @staticmethod
     def under(base: pathlib.Path, rest: str) -> pathlib.Path | None:
         """The file `rest` names inside `base`, or None. Test data may sit in
-        subfolders; `..`, absolute paths and symlinks that point out do not."""
+        subfolders; `..`, absolute paths and symlinks that point out do not.
+
+        Looser than `workfolder.contained` on purpose: this only reads, so a
+        link that stays inside `base` is harmless, and it serves images/ and
+        the old German folders too, which the build never writes."""
         segments = rest.split("/")
         if not segments or not all(SEGMENT_RE.match(part) for part in segments):
             return None
