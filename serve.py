@@ -15,7 +15,9 @@ Two routes lead to test data: whatever the browser can display lives under
 `data/` in the working folder and is linked over `http`. Whatever has to sit in
 the project gets a button that sends `POST /reveal` — the server reveals the path
 in the Finder. Only paths the build froze into `setups.json` are allowed — a
-setup's `paths` and its `files`.
+setup's `paths` and its `files`. Whatever is served from `data/` and `images/`
+comes with `Content-Security-Policy: sandbox`: a test page or an SVG still
+renders, but its script never runs as this origin.
 
 A setup's files have two more routes, both reading `setups.json` only:
 
@@ -645,11 +647,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return          # the page knocks every five seconds — that floods the log
         sys.stderr.write("  %s\n" % (fmt % args))
 
-    def send(self, code: int, body: bytes, ctype: str) -> None:
+    def send(self, code: int, body: bytes, ctype: str, page: bool = False) -> None:
+        """One response. Everything but the page itself goes out sandboxed: a
+        test file under data/ or an SVG under images/ is foreign content, and
+        script in it would otherwise run as this origin — past the Host check
+        and the X-Checklist header alike, straight to POST /launch. A sandbox
+        without allow-same-origin still renders an HTML or PDF preview in its
+        tab; it just gives it an origin of its own."""
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        # A .txt that looks like HTML stays text.
+        self.send_header("X-Content-Type-Options", "nosniff")
+        if not page:
+            self.send_header("Content-Security-Policy", "sandbox")
         self.end_headers()
         self.wfile.write(body)
 
@@ -821,7 +833,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             page = (template.replace("%%STATE%%", escape(state))
                             .replace("%%RESTART%%", html.escape(self.restart))
                             .replace("%%FOLDER%%", html.escape(str(self.root))))
-            self.send(200, page.encode("utf-8"), "text/html; charset=utf-8")
+            self.send(200, page.encode("utf-8"), "text/html; charset=utf-8", page=True)
             return
         if path == "/peek":
             self.peek()

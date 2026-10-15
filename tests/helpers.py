@@ -98,6 +98,17 @@ class RunningServer:
         finally:
             connection.close()
 
+    def headers_of(self, path: str) -> dict:
+        """The response headers of a GET, names lower-cased."""
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        try:
+            connection.request("GET", path)
+            response = connection.getresponse()
+            response.read()
+            return {name.lower(): value for name, value in response.getheaders()}
+        finally:
+            connection.close()
+
     def page_state(self) -> dict:
         """The state GET / injects into the page."""
         status, body = self.request("GET", "/")

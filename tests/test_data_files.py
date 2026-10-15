@@ -354,6 +354,18 @@ class ServedFilesTest(unittest.TestCase):
         self.assertIn(b"crlf.txt", body)
         self.assertEqual(self.data("plain.txt").read_text(encoding="utf-8"), "scribbled")
 
+    def test_served_files_are_sandboxed(self):
+        # A test file is foreign content: script in it must not run as this
+        # origin, or it could POST /launch past every guard.
+        (self.root / build.DATA_DIR / "x.html").write_text("<script>1</script>", encoding="utf-8")
+        (self.root / "images").mkdir(exist_ok=True)
+        (self.root / "images" / "a.svg").write_text("<svg/>", encoding="utf-8")
+        for path in ("/data/x.html", "/images/a.svg", "/data/plain.txt", "/peek?setup=files&file=0"):
+            headers = self.server.headers_of(path)
+            self.assertEqual(headers.get("content-security-policy"), "sandbox", path)
+            self.assertEqual(headers.get("x-content-type-options"), "nosniff", path)
+        self.assertNotIn("content-security-policy", self.server.headers_of("/"))
+
     def test_files_join_the_reveal_whitelist(self):
         # 404 = passed the whitelist and found nothing: no Finder opens in a test.
         self.data("plain.txt").unlink()
