@@ -892,6 +892,21 @@
       e.stopPropagation();
       startLaunch(setup.id, view);
     });
+    // From the keyboard the summary would still get Space and Enter and fold
+    // the block — so the button takes both keys itself and starts on keydown.
+    // Space also on keyup: Firefox fires its click (and the summary's toggle)
+    // there.
+    button.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (!e.repeat && !button.disabled) startLaunch(setup.id, view);
+    });
+    button.addEventListener("keyup", (e) => {
+      if (e.key !== " ") return;
+      e.preventDefault();
+      e.stopPropagation();
+    });
     wrap.append(button, status);
     together(launchViewsOf, setup.id, view);
     return { wrap, tail };

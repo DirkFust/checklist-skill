@@ -367,6 +367,27 @@ class LangTest(unittest.TestCase):
         self.assertEqual(build.choose_lang(None, {}, "it"), "it")
         self.assertEqual(build.choose_lang(None, {}, None), "en")
 
+    def test_merge_keeps_the_old_language_below_spec_above_project(self):
+        self.assertEqual(build.choose_lang(None, {}, "it", previous="de"), "de")
+        self.assertEqual(build.choose_lang(None, {"lang": "fr"}, "it", previous="de"), "fr")
+        self.assertEqual(build.choose_lang("en", {}, "it", previous="de"), "en")
+
+    def test_previous_lang_only_on_merge_of_a_saved_folder(self):
+        folder = Folder()
+        try:
+            build_into(sample_spec(), folder.path)
+            state = read_json(folder.path / "state.json")
+            state["meta"]["lang"] = "de"
+            (folder.path / "state.json").write_text(json.dumps(state), encoding="utf-8")
+            # Not saved yet: a merge carries nothing over, the language neither.
+            self.assertIsNone(build.previous_lang(folder.path, build.REBUILD_MERGE))
+            state["meta"]["folder"] = str(folder.path)
+            (folder.path / "state.json").write_text(json.dumps(state), encoding="utf-8")
+            self.assertEqual(build.previous_lang(folder.path, build.REBUILD_MERGE), "de")
+            self.assertIsNone(build.previous_lang(folder.path, build.REBUILD_FORCE))
+        finally:
+            folder.cleanup()
+
     def test_bad_spec_lang_aborts(self):
         for bad in (["de"], "../de", ""):
             with self.assertRaises(SystemExit, msg=repr(bad)):

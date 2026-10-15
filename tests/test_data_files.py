@@ -83,6 +83,17 @@ class DataBuildTest(unittest.TestCase):
         self.assertEqual(written["mac.txt"], b"a\rb")
         self.assertEqual(written["plain.txt"], b"a\nb")
 
+    def test_eol_does_not_double_existing_carriage_returns(self):
+        written = self.built({
+            "crlf.txt": {"text": "a\r\nb\rc\n", "eol": "crlf"},
+            "lf.txt": {"text": "a\r\nb\rc", "eol": "lf"},
+            # Without `eol` the text stays as written, carriage returns and all.
+            "as-is.txt": {"text": "a\r\nb"},
+        })
+        self.assertEqual(written["crlf.txt"], b"a\r\nb\r\nc\r\n")
+        self.assertEqual(written["lf.txt"], b"a\nb\nc")
+        self.assertEqual(written["as-is.txt"], b"a\r\nb")
+
     def test_utf32_bom_by_endianness(self):
         written = self.built({"be.txt": {"text": "a", "encoding": "UTF-32-BE", "bom": True}})
         self.assertEqual(written["be.txt"], codecs.BOM_UTF32_BE + "a".encode("utf-32-be"))
@@ -536,6 +547,11 @@ class PeekTest(unittest.TestCase):
     def test_bom_without_declared_encoding(self):
         peek = serve.peek("b", codecs.BOM_UTF8 + b"x\n", None)
         self.assertEqual((peek["bom"], peek["lines"]), (True, ["x\n"]))
+
+    def test_no_bom_in_a_single_byte_encoding(self):
+        # ÿþ in Latin-1 is text that happens to share bytes with the UTF-16-LE mark.
+        peek = serve.peek("l", "ÿþab\n".encode("latin-1"), "latin-1")
+        self.assertEqual((peek["bom"], peek["lines"]), (False, ["ÿþab\n"]))
 
     def test_foreign_bom_is_reported(self):
         peek = serve.peek("b", codecs.BOM_UTF16_LE + "x".encode("utf-16-le"), None)

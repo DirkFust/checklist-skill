@@ -45,8 +45,9 @@ checklist of a project shares, written down once.
     {"lang": "de", "launch": {"build": "make app", "run": "open -a App {files}"},
      "launches": {"editor": {"run": "open -a Editor {files}"}}}
 
-Language: `--lang` beats the spec's `lang`, that beats the project's, then
-`en`. It lands in `meta.lang`, so `--as-spec` writes it back into the spec.
+Language: `--lang` beats the spec's `lang`, that beats — on `--merge` — the
+old state's, that beats the project's, then `en`. It lands in `meta.lang`, so
+`--as-spec` writes it back into the spec and `--merge` keeps it.
 
 Spec format:
 
@@ -86,7 +87,8 @@ Spec format:
       "data": {                           // optional: test files, written to
         "notes.txt": "verbatim UTF-8\\n", //   <folder>/data/<name>. Name: /-separated
         "case-1/win.txt": {               //   segments of letters, digits, . _ -
-          "text": "a\\nb\\n",               //   \\n becomes the eol (lf | crlf | cr);
+          "text": "a\\nb\\n",               //   every line end becomes the eol (lf |
+                                          //   crlf | cr); without eol: verbatim;
           "encoding": "utf-16-le",        //   any Python text codec, default utf-8;
           "eol": "crlf", "bom": true},    //   bom: utf-8 / utf-16-le|be / utf-32-le|be
                                           //   (bare utf-16/utf-32 abort: byte order)
@@ -169,6 +171,7 @@ PRISTINE_DIR = ".pristine"
 DATA_SEGMENT_RE = re.compile(r"^[0-9a-zA-Z][0-9a-zA-Z._-]*$")
 DEFAULT_ENCODING = "utf-8"
 EOLS = {"lf": "\n", "crlf": "\r\n", "cr": "\r"}
+LINE_END_RE = re.compile(r"\r\n|\r")
 # By codec name as codecs.lookup spells it. The bare utf-16/utf-32 are missing on
 # purpose: their byte order is whatever this machine has, and Python writes a BOM
 # for them even unasked — see AMBIGUOUS_ENCODINGS.
@@ -298,14 +301,27 @@ def lang_of(value, where: str) -> str:
     return value
 
 
-def choose_lang(cli: str | None, spec: dict, project_lang: str | None) -> str:
-    """`--lang` beats the spec, the spec beats the project, `en` is the floor.
+def choose_lang(cli: str | None, spec: dict, project_lang: str | None,
+                previous: str | None = None) -> str:
+    """`--lang` beats the spec, the spec beats the language a `--merge` finds in
+    the old state, that beats the project, `en` is the floor.
 
     The spec's own `lang` is what makes a rebuild keep its language — `read.py
     --as-spec` writes it back — so a forgotten `--lang` no longer flips the page.
+    The old state's covers a `--merge` from the original spec of a page first
+    built with `--lang` alone.
     """
     spec_lang = lang_of(spec["lang"], "spec") if "lang" in spec else None
-    return cli or spec_lang or project_lang or DEFAULT_LANG
+    return cli or spec_lang or previous or project_lang or DEFAULT_LANG
+
+
+def previous_lang(folder: pathlib.Path, rebuild: str) -> str | None:
+    """The language a `--merge` carries over: the saved state's `meta.lang`.
+    Nothing for any other rebuild — that starts the page afresh."""
+    if rebuild != REBUILD_MERGE:
+        return None
+    lang = ((saved_state(folder) or {}).get("meta") or {}).get("lang")
+    return lang_of(lang, str(folder / "state.json")) if lang else None
 
 
 def launch_layer(raw, where: str) -> dict:
@@ -434,6 +450,10 @@ def encoded_text(entry: dict, where: str) -> DataFile:
                  f"writes a BOM for it unasked — say {codec}-le or {codec}-be")
     if bom and codec not in BOMS:
         sys.exit(f"{where}: bom goes with {', '.join(BOMS)} — not {encoding!r}")
+    if "eol" in entry:
+        # Line ends already in the text count as line ends, not as stray
+        # characters — otherwise crlf turns a pasted `\r\n` into `\r\r\n`.
+        text = LINE_END_RE.sub("\n", text)
     try:
         content = text.replace("\n", EOLS[eol]).encode(codec)
     except UnicodeEncodeError as error:
@@ -1052,7 +1072,7 @@ def main() -> None:
         sys.exit("spec: must be an object")
     folder = pathlib.Path(a.out).expanduser().resolve()
     project = find_project(folder.parent, pathlib.Path.home())
-    lang = choose_lang(a.lang, spec, project.lang)
+    lang = choose_lang(a.lang, spec, project.lang, previous_lang(folder, a.rebuild))
     shell = pathlib.Path(a.shell).read_text(encoding="utf-8")
     table = strings(pathlib.Path(__file__).with_name("strings") / f"{lang}.json")
     build(spec, shell, fonts(pathlib.Path(a.fonts)), table, lang, folder,

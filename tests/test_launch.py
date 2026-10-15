@@ -1,9 +1,14 @@
 """▶: POST /launch runs a setup's build → quit → run (→ url wait → open),
 GET /launch reports how far it got, and the server never leaves a run behind."""
 
+import contextlib
+import http.client
 import http.server
 import os
+import signal
 import socket
+import subprocess
+import sys
 import threading
 import time
 import unittest
@@ -112,22 +117,37 @@ class StepsTest(LaunchTest):
         "slow": {"build": "sleep 30", "run": "true"},
         "server": {"run": "echo $$ > server.pid; exec sleep 30"},
         "chatty": {"run": "seq 1 500"},
+        "noisy": {"run": "while :; do echo noise; sleep 0.02; done"},
+        "slow-broken": {"build": "echo compile error; sleep 0.5; exit 2", "run": "true"},
     }
 
     def test_done_when_run_exits_zero(self):
         result = self.launched("ok")
         self.assertEqual(result["phase"], "done", result)
-        # A failing quit is logged and passed by — the app may simply not run.
-        self.assertIn("quitting", result["tail"])
+        # Once the run is under way, its own output is the tail.
         self.assertIn("started", result["tail"])
         self.assertIsNone(result["url"])
+        # A failing quit is logged and passed by — the app may simply not run.
+        log = (self.root / serve.LAUNCH_LOG).read_text(encoding="utf-8")
+        self.assertIn("quitting", log)
 
-    def test_every_step_has_a_header_in_the_log(self):
+    def test_every_step_has_a_header_in_its_log(self):
         self.launched("ok")
         log = (self.root / serve.LAUNCH_LOG).read_text(encoding="utf-8")
-        for step, command in (("quit", "echo quitting; exit 4"), ("build", "echo building"),
-                              ("run", "echo started")):
+        for step, command in (("quit", "echo quitting; exit 4"), ("build", "echo building")):
             self.assertRegex(log, rf"\d\d:\d\d:\d\d ok {step}: {command}")
+        self.assertNotIn("started", log)
+        run_log = (self.root / serve.LAUNCH_RUN_LOG).read_text(encoding="utf-8")
+        self.assertRegex(run_log, r"\d\d:\d\d:\d\d ok run: echo started\nstarted\n")
+
+    def test_build_failure_tail_is_not_drowned_by_the_running_app(self):
+        self.assertEqual(self.launched("noisy")["phase"], "running")
+        result = self.launched("slow-broken")
+        self.assertEqual(result["phase"], "failed")
+        self.assertIn("compile error", result["tail"])
+        self.assertNotIn("noise", result["tail"])
+        # The app that kept running still shows its own output.
+        self.assertIn("noise", self.server.launch_status("noisy")[1]["tail"])
 
     def test_build_failure_shows_its_tail(self):
         result = self.launched("broken")
@@ -294,6 +314,71 @@ class UnexpectedErrorTest(LaunchTest):
         self.assertTrue(any("ValueError" in line for line in result["tail"]), result["tail"])
         # The worker let go of the lock: the next ▶ is not refused as busy.
         self.assertEqual(self.server.launch("ready")[0], 202)
+
+
+class SignalTest(unittest.TestCase):
+    """serve.py as a process: a terminal that goes away (SIGHUP) or an
+    impatient second signal must still take what ▶ started down with it."""
+
+    SPEC = {"title": "Signals", "setups": {"stubborn": {"label": "x", "launch": {
+        # Ignores SIGTERM, so shutting it down takes the whole kill grace.
+        "run": "trap '' TERM; echo $$ > stubborn.pid; while :; do sleep 0.1; done"}}},
+        "items": [{"title": "A", "setup": "stubborn"}]}
+
+    def setUp(self):
+        self.folder = Folder()
+        self.root = self.folder.path
+        build_into(self.SPEC, self.root)
+        self.port = free_port()
+        self.process = subprocess.Popen(
+            [sys.executable, str(SKILL_ROOT / "serve.py"), str(self.root), "--port",
+             str(self.port), "--idle", "0", "--read-idle", "0"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        self.assertIn(f":{self.port}/", self.process.stdout.readline())
+
+    def tearDown(self):
+        if self.process.poll() is None:
+            self.process.kill()
+            self.process.wait()
+        self.process.stdout.close()
+        pid_file = self.root.parent / "stubborn.pid"
+        if pid_file.is_file():
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(int(pid_file.read_text()), signal.SIGKILL)
+        self.folder.cleanup()
+
+    def start_stubborn(self) -> int:
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        try:
+            connection.request("POST", "/launch", b'{"setup": "stubborn"}',
+                               {"Content-Type": "application/json", "X-Checklist": "launch"})
+            self.assertEqual(connection.getresponse().status, 202)
+        finally:
+            connection.close()
+        path = self.root.parent / "stubborn.pid"
+        deadline = time.monotonic() + WAIT_LIMIT
+        while not path.is_file() or not path.read_text().strip():
+            self.assertLess(time.monotonic(), deadline, "the run never started")
+            time.sleep(POLL)
+        return int(path.read_text())
+
+    def stopped(self) -> str:
+        out, _ = self.process.communicate(timeout=WAIT_LIMIT)
+        return out
+
+    def test_sighup_stops_the_server_and_the_run(self):
+        pid = self.start_stubborn()
+        self.process.send_signal(signal.SIGHUP)
+        self.assertIn("stopped", self.stopped())
+        self.assertTrue(gone_soon(pid))
+
+    def test_a_second_signal_does_not_abort_the_cleanup(self):
+        pid = self.start_stubborn()
+        self.process.send_signal(signal.SIGTERM)
+        time.sleep(0.5)                 # well inside the kill grace
+        self.process.send_signal(signal.SIGTERM)
+        self.assertIn("was stopped too", self.stopped())
+        self.assertTrue(gone_soon(pid))
 
 
 class TemplateTest(unittest.TestCase):

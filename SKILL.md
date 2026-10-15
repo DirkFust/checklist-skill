@@ -19,8 +19,8 @@ is the one script that goes online, and only when you want different typefaces.)
 
 The page speaks the user's language: `de` for German, `en` (the default) for English. Say it
 once — `lang` in the project's `checklist.json` (see *Starting it* below) or in the
-spec; `--lang` beats both but is not remembered by a `--merge` rebuild, so prefer the first
-two. `read.py --as-spec` writes it back into the spec. The chrome lives
+spec; `--lang` beats both. A `--merge` rebuild keeps the language the page already has unless
+the spec names one, and `read.py --as-spec` writes it back into the spec. The chrome lives
 in `strings/<lang>.json`, `shell.html`
 carries `{{t.key}}` where the text belongs. The two have to agree exactly — a key the table
 has lost and a key nobody uses both abort the build, so a half-translated page cannot ship.
@@ -107,8 +107,9 @@ the output tail and whatever was running keeps running; then the run an earlier 
 server started goes down, its whole process group; `quit` for an app outside that group (a
 failure is passed by, it may not have been running); `run`, detached — exited 0 within 3 s is
 *done* (an app that handed itself over), alive is *running*. With a `url` it waits until that
-answers HTTP, then opens it. One live run per server. Every step writes into `launch.log` in the working folder — read that
-before guessing when a human says ▶ failed. The server's idle stop ends what ▶ started too, so
+answers HTTP, then opens it. One live run per server. `build` and `quit` write into `launch.log`
+in the working folder, the run into `launch-run.log` — read those before guessing when a human
+says ▶ failed. The server's idle stop ends what ▶ started too, so
 a dev server goes down with the checklist.
 
 **The launch belongs to the project, not to each spec.** `checklist.json`, found walking up
@@ -129,7 +130,9 @@ A setup then needs nothing (it gets the default `launch`), or names a profile:
 field, `null` switches a step off; fields and merge order are in the `build.py` docstring.
 
 Two placeholders: `{files}` — the setup's files, absolute, quoted, space-separated — and
-`{data}`, the working folder's `data/`. Any other bare `{word}` aborts the build, so a typo
+`{data}`, the working folder's `data/`. Both arrive quoted already — write `open {files}`, never
+`open "{files}"`: the extra quotes glue every file into one argument, or break a path with a
+space. Any other bare `{word}` aborts the build, so a typo
 never reaches the shell; `${VAR}`, `{}` and `{print $1}` pass through. Shell code that needs a
 lone word in braces gets spaces: `awk '{ print }'`.
 
@@ -137,7 +140,7 @@ lone word in braces gets spaces: `awk '{ print }'`.
 files, launch — into `setups.json`. The page sends a setup id and nothing else; the server runs
 what the build froze and refuses requests whose `Host` is not itself. That leaves the spec as
 the only source of a command — and you, its author, responsible for what ▶ runs. No secrets in
-commands: they land in `setups.json` and `launch.log`.
+commands: they land in `setups.json` and the launch logs.
 
 ## Test data
 
@@ -312,14 +315,14 @@ server; no button brings the server itself back.
 | File-creating commands handed to the user to paste | Busywork; put the files into `data`, or run a script yourself before handing over |
 | A file used by an item without `files` or `paths` | The user hunts for it in the Finder |
 | Test data left behind after the run | Clutter in the folder, `/tmp` and the project; `build.py --clean`, plus the script's own cleanup |
+| `"{files}"` or `'{data}'` — a placeholder wrapped in quotes | They are quoted already; the extra pair turns all files into one argument or splits a path with a space |
 | `{file}` or any other typo in braces in a launch command | The build aborts — only `{files}` and `{data}` exist; a word in shell braces needs spaces |
 | A one-off profile put into `checklist.json` | Every checklist of the project sees it; a profile for one list belongs in the spec's `launches` |
 | A dev server started with ▶, then the checklist server idles out | The dev server goes down with it — restart `serve.py` and press ▶ again |
-| A secret in a launch command | Frozen into `setups.json`, echoed into `launch.log` |
+| A secret in a launch command | Frozen into `setups.json`, echoed into `launch.log` / `launch-run.log` |
 | A long path in body text instead of `paths` or `links` | They have to hunt for it by hand when a button would have done |
 | A `[-]` item reported as open, or asked about again | The user settled it on purpose — the second ask is exactly what the marker exists to prevent |
 | Reporting the state from memory | A false statement — always run `read.py` first |
 | `state.json` queried by hand with a mistyped key (`notes` for `note`) | An empty answer instead of an error — you report "no notes" while there are some |
 | No `lang` anywhere for a user who works in another language | The chrome ships English by default — the page speaks past its reader; put `lang` into `checklist.json` once |
-| Language given only as `--lang`, then `--merge` from the original spec | The page comes back English — `lang` belongs in the spec or `checklist.json` |
 | A `<link>` to a font or script CDN added to `shell.html` | Every page load tells that CDN somebody is looking at this checklist, and offline the page is unstyled |

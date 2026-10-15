@@ -47,11 +47,15 @@ A setup with a frozen `launch` can be started from the page (▶), again from
     under way: one build at a time.
   · `GET /launch?setup=<id>` → phase (idle | building | quitting | starting |
     waiting | running | done | failed), message, `tail` (the last 20 lines
-    this launch wrote) and url. Every step writes into `launch.log` in the
-    folder, each under a header line with time, setup id, step and command.
+    this launch wrote — the run's once it has one, else the build's and
+    quit's) and url. Build and quit write into `launch.log` in the folder,
+    the run into `launch-run.log`, so a dev server that keeps talking never
+    buries the next build's error; each step under a header line with time,
+    setup id, step and command.
 
 Whatever ▶ started and is still alive goes down with the server — on a stop,
-a SIGTERM, and the idle stop alike.
+a SIGTERM or SIGHUP (the terminal closed), and the idle stop alike. A second
+signal while that cleanup runs is ignored rather than cutting it short.
 
 Mutating POSTs carry `X-Checklist: <route>` — `reveal` for /reveal, `reset` for
 /reset, `launch` for /launch — so the header sent for one action never passes
@@ -146,6 +150,8 @@ DEFAULT_ENCODING = "utf-8"
 BOMS = {"utf-32-le": codecs.BOM_UTF32_LE, "utf-32-be": codecs.BOM_UTF32_BE,
         "utf-8": codecs.BOM_UTF8,
         "utf-16-le": codecs.BOM_UTF16_LE, "utf-16-be": codecs.BOM_UTF16_BE}
+# The encodings that have a byte order mark, by codecs.lookup's spelling.
+UNICODE_CODECS = ("utf-8", "utf-16", "utf-32")
 LINE_END_RE = re.compile(r"\r\n|\r|\n")
 # Each line keeps its end, so the page can show which one it is.
 LINE_RE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+")
@@ -158,7 +164,14 @@ STATE_TEXT_FIELDS = ("title", "detail", "state", "note", "text")
 # ▶: every step writes here, in the working folder — a build's output is what
 # tells a failed launch apart from a slow one.
 LAUNCH_LOG = "launch.log"
+# …except the run, which gets a file of its own: a dev server keeps writing for
+# as long as it lives, and in launch.log it would bury the output of the next
+# build — the very lines that say why that build failed.
+LAUNCH_RUN_LOG = "launch-run.log"
 QUIT_TIMEOUT = 30
+# What stops the server cleanly, taking ▶'s run along. SIGINT is Ctrl-C, which
+# Python already turns into KeyboardInterrupt.
+STOP_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
 BUILD_TIMEOUT = 15 * 60
 # A run that ends this quickly either detached itself (an app that hands over to
 # launchd and exits 0) or failed to start; one still alive is a server.
@@ -279,15 +292,26 @@ def decode(content: bytes, encoding: str, mark: str | None) -> str | None:
     return None if "\x00" in text else text
 
 
+def unicode_encoding(encoding: str) -> bool:
+    try:
+        return codecs.lookup(encoding).name.startswith(UNICODE_CODECS)
+    except LookupError:
+        return False
+
+
 def peek(name: str, content: bytes, encoding: str | None) -> dict:
     """What a test file looks like inside — the things an editor hides and a
     test may hinge on: encoding, byte order mark, line ends, the last newline.
 
     Decoded with the encoding the spec declared, else UTF-8; a BOM is reported
-    whichever it is, and stripped when it belongs to that encoding.
+    whichever Unicode one it is (a single-byte encoding has none), and stripped
+    when it belongs to that encoding.
     """
     encoding = encoding or DEFAULT_ENCODING
-    mark = next((codec for codec, bom in BOMS.items() if content.startswith(bom)), None)
+    # A BOM exists only in the Unicode encodings: `ÿþ` at the start of a
+    # Latin-1 file is text that happens to share the UTF-16-LE mark's bytes.
+    mark = next((codec for codec, bom in BOMS.items() if content.startswith(bom)), None) \
+        if unicode_encoding(encoding) else None
     text = decode(content, encoding, mark)
     result = {"name": name, "size": len(content), "encoding": encoding,
               "bom": mark is not None, "eol": "none", "final_newline": False,
@@ -439,6 +463,26 @@ def answers(url: str) -> bool:
         connection.close()
 
 
+def size_of(path: pathlib.Path) -> int:
+    return path.stat().st_size if path.is_file() else 0
+
+
+def tail(path: pathlib.Path, start: int, end: int | None) -> list:
+    """The last lines of one stretch of a log, read from its end."""
+    try:
+        with path.open("rb") as log:
+            stop = log.seek(0, os.SEEK_END) if end is None else end
+            begin = max(start, stop - TAIL_BYTES)
+            log.seek(begin)
+            chunk = log.read(stop - begin)
+    except FileNotFoundError:
+        return []
+    lines = chunk.decode("utf-8", "replace").splitlines()
+    if begin > start:
+        lines = lines[1:]               # cut off mid-line
+    return lines[-TAIL_LINES:]
+
+
 def group_alive(pgid: int) -> bool:
     try:
         os.killpg(pgid, 0)
@@ -476,8 +520,8 @@ class Stopping(Exception):
 
 @dataclasses.dataclass
 class Launch:
-    """One press of ▶ for one setup: how far it got, and which stretch of
-    launch.log is its own."""
+    """One press of ▶ for one setup: how far it got, and which stretches of
+    launch.log and launch-run.log are its own."""
     setup_id: str
     start: int                              # offset in launch.log
     url: str | None
@@ -485,6 +529,8 @@ class Launch:
     message: str = ""
     end: int | None = None                  # set once a later launch writes
     process: subprocess.Popen | None = None  # the run, once spawned
+    run_start: int | None = None            # offset in launch-run.log, once spawned
+    run_end: int | None = None              # set once a later run writes
 
 
 class Launcher:
@@ -502,7 +548,7 @@ class Launcher:
     def __init__(self, root: pathlib.Path, opener=open_url, quit_timeout: float = QUIT_TIMEOUT,
                  build_timeout: float = BUILD_TIMEOUT, settle: float = SETTLE_SECONDS,
                  kill_grace: float = KILL_GRACE, poll: float = READY_POLL, probe=answers):
-        self.log = root / LAUNCH_LOG
+        self.log, self.run_log = root / LAUNCH_LOG, root / LAUNCH_RUN_LOG
         self.opener, self.probe = opener, probe
         self.quit_timeout, self.build_timeout = quit_timeout, build_timeout
         self.settle, self.kill_grace, self.poll = settle, kill_grace, poll
@@ -519,7 +565,7 @@ class Launcher:
             if self.busy or self.closing.is_set():
                 return None
             self.busy = True
-            start = self.log.stat().st_size if self.log.is_file() else 0
+            start = size_of(self.log)
             for earlier in self.launches.values():
                 if earlier.end is None:
                     earlier.end = start
@@ -539,23 +585,16 @@ class Launcher:
                 code = run.process.returncode
                 run.phase, run.message = (DONE if code == 0 else FAILED), f"run exited with {code}"
             status = {"phase": run.phase, "message": run.message, "url": run.url}
-            start, end = run.start, run.end
-        return {**status, "tail": self.tail(start, end)}
+            stretch = self.stretch(run)
+        return {**status, "tail": tail(*stretch)}
 
-    def tail(self, start: int, end: int | None) -> list:
-        """The last lines of one launch's stretch of the log, read from its end."""
-        try:
-            with self.log.open("rb") as log:
-                stop = log.seek(0, os.SEEK_END) if end is None else end
-                begin = max(start, stop - TAIL_BYTES)
-                log.seek(begin)
-                chunk = log.read(stop - begin)
-        except FileNotFoundError:
-            return []
-        lines = chunk.decode("utf-8", "replace").splitlines()
-        if begin > start:
-            lines = lines[1:]               # cut off mid-line
-        return lines[-TAIL_LINES:]
+    def stretch(self, run: Launch) -> tuple:
+        """Where a launch's tail is: the run's output once there is a run —
+        that is what a run that failed or a url that never answered is about —
+        and before that the build's and quit's."""
+        if run.run_start is not None:
+            return self.run_log, run.run_start, run.run_end
+        return self.log, run.start, run.end
 
     def shutdown(self) -> bool:
         """End whatever is ours: a step under way, the live run. True if
@@ -579,9 +618,10 @@ class Launcher:
         with self.lock:
             run.phase, run.message = phase, message
 
-    def header(self, run: Launch, step: str, command: str) -> None:
+    def header(self, run: Launch, step: str, command: str,
+               path: pathlib.Path | None = None) -> None:
         stamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        with self.log.open("a", encoding="utf-8") as log:
+        with (path or self.log).open("a", encoding="utf-8") as log:
             log.write(f"--- {stamp} {run.setup_id} {step}: {command}\n")
 
     def spawn(self, run: Launch, step: str, command: str, cwd: str) -> subprocess.Popen:
@@ -590,8 +630,15 @@ class Launcher:
         with self.lock:
             if self.closing.is_set():
                 raise Stopping("the server is stopping")
-            self.header(run, step, command)
-            with self.log.open("ab") as log:
+            path = self.run_log if step == "run" else self.log
+            if step == "run":
+                run.run_start = size_of(self.run_log)
+                for earlier in self.launches.values():
+                    if earlier is not run and earlier.run_start is not None \
+                            and earlier.run_end is None:
+                        earlier.run_end = run.run_start
+            self.header(run, step, command, path)
+            with path.open("ab") as log:
                 process = subprocess.Popen(["/bin/sh", "-c", command], cwd=cwd,
                                            stdin=subprocess.DEVNULL, stdout=log,
                                            stderr=subprocess.STDOUT, start_new_session=True)
@@ -624,8 +671,9 @@ class Launcher:
             # phase where it was, and the page polls `waiting` forever. Failed,
             # with the traceback in the log, is something a human can act on.
             self.set(run, FAILED, f"{type(error).__name__}: {error}")
+            # Into the log the tail reads from, so the page shows it.
             with contextlib.suppress(OSError):
-                with self.log.open("a", encoding="utf-8") as log:
+                with self.stretch(run)[0].open("a", encoding="utf-8") as log:
                     log.write(traceback.format_exc())
         finally:
             with self.lock:
@@ -1096,7 +1144,10 @@ def main() -> None:
         # same thread — the exception arrives cleanly down below instead.
         def stop(*_):
             raise KeyboardInterrupt
-        signal.signal(signal.SIGTERM, stop)
+        # SIGHUP too: a terminal that closes would otherwise kill the server
+        # outright, and whatever ▶ started would live on with nobody to stop it.
+        for signum in STOP_SIGNALS:
+            signal.signal(signum, stop)
         # Read this line before handing the URL on: the port may not be the one
         # that was asked for.
         print(f"{url} — {root}", flush=True)
@@ -1116,12 +1167,16 @@ def main() -> None:
             pass
         finally:
             stop.set()
+            # Already on the way down: a second Ctrl-C or SIGTERM would raise
+            # in the middle of the cleanup below and leave the run alive.
+            for signum in (*STOP_SIGNALS, signal.SIGINT):
+                signal.signal(signum, signal.SIG_IGN)
             # Whatever ▶ started goes down with the server, the idle stop
             # included — even a dev server someone still uses in another tab.
             # Left running, it would hold its port with nobody to stop it.
             ended = launcher.shutdown()
         print("stopped — the state is in state.json"
-              + (f"; the process ▶ started was stopped too (log: {launcher.log})" if ended else ""),
+              + (f"; the process ▶ started was stopped too (log: {launcher.run_log})" if ended else ""),
               flush=True)
 
 
