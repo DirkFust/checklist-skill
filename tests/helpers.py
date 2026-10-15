@@ -66,8 +66,9 @@ class Folder:
 class RunningServer:
     """serve.py's server on an ephemeral port, in a background thread."""
 
-    def __init__(self, root: pathlib.Path):
-        handler = serve.handler_for(root.resolve(), serve.Pulse())
+    def __init__(self, root: pathlib.Path, launcher: "serve.Launcher | None" = None):
+        self.launcher = launcher or serve.Launcher(root.resolve())
+        handler = serve.handler_for(root.resolve(), serve.Pulse(), launcher=self.launcher)
         handler.log_message = lambda *_: None      # keep the test output readable
         self.server, _ = serve.listen(EPHEMERAL_PORT, 1, handler)
         self.port = self.server.server_address[1]
@@ -77,6 +78,8 @@ class RunningServer:
     def stop(self) -> None:
         self.server.shutdown()
         self.server.server_close()
+        # As main() does: whatever ▶ started must not outlive the test.
+        self.launcher.shutdown()
 
     def request(self, method: str, path: str, body: bytes | None = None,
                 headers: dict | None = None, host: str | None = None):
@@ -115,6 +118,18 @@ class RunningServer:
                 **({"X-Checklist": "reset"} if headers is None else headers)}
         return self.request("POST", "/reset", json.dumps({"setup": setup_id}).encode("utf-8"),
                             sent)
+
+    def launch(self, setup_id: str, headers: dict | None = None):
+        """POST /launch; `headers` replaces the guard header the page sends."""
+        sent = {"Content-Type": "application/json",
+                **({"X-Checklist": "launch"} if headers is None else headers)}
+        return self.request("POST", "/launch", json.dumps({"setup": setup_id}).encode("utf-8"),
+                            sent)
+
+    def launch_status(self, setup_id: str) -> tuple[int, dict | bytes]:
+        """GET /launch; the parsed JSON on 200, the raw body otherwise."""
+        status, body = self.request("GET", f"/launch?setup={setup_id}")
+        return status, (json.loads(body) if status == 200 else body)
 
     def peek(self, setup_id: str, index) -> tuple[int, dict | bytes]:
         """GET /peek; the parsed JSON on 200, the raw body otherwise."""

@@ -42,6 +42,17 @@
   "binary_no_preview": "Binärdatei — keine Vorschau.",
   "peek_truncated": "… hier abgeschnitten",
 
+  "launch_start": "Starten",
+  "launch_quitting": "beendet die alte Instanz…",
+  "launch_building": "baut…",
+  "launch_starting": "startet…",
+  "launch_waiting": "wartet auf den Server…",
+  "launch_running": "läuft",
+  "launch_done": "gestartet",
+  "launch_failed": "fehlgeschlagen",
+  "launch_busy": "ein anderer Start läuft noch",
+  "same_as": "wie",
+
   "save": "Speichern",
   "saving": "Wird gespeichert…",
   "saved": "Gespeichert",

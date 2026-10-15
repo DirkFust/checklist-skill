@@ -223,8 +223,27 @@
     cursor: pointer; padding: 7px 12px; list-style: none;
     font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 11px; font-weight: 600;
     letter-spacing: .12em; text-transform: uppercase; color: var(--accent);
-    display: flex; align-items: center; gap: 8px;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
   }
+  .setup .same-as { color: var(--ink-faint); }
+  /* ▶ lives in the summary row, so a folded "same as" block starts without
+     being opened; the row's small caps stop at its edge. */
+  .launch {
+    margin-left: auto; display: flex; align-items: center; gap: 8px;
+    font-family: "Public Sans", ui-sans-serif, system-ui, sans-serif;
+    font-weight: 400; letter-spacing: normal; text-transform: none;
+  }
+  .launch button {
+    font: inherit; font-size: 12.5px; color: var(--accent); background: var(--surface);
+    border: 1px solid var(--accent); border-radius: 3px; padding: 2px 10px; cursor: pointer;
+  }
+  .launch button:hover { background: var(--accent); color: var(--surface); }
+  .launch button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+  .launch button[disabled] { opacity: .5; cursor: default; }
+  .launch-status { font-size: 12.5px; color: var(--ink-soft); }
+  .launch-status[data-phase="failed"] { color: var(--problem); }
+  .launch-status[data-phase="running"],
+  .launch-status[data-phase="done"] { color: var(--ok); }
   .setup > summary::-webkit-details-marker { display: none; }
   .setup > summary::before { content: "\25B8"; font-size: 10px; }
   .setup[open] > summary::before { content: "\25BE"; }
@@ -733,9 +752,20 @@
     return { row, load };
   }
 
+  // Items may share a setup, and then every block of that id shows the same
+  // files and the same launch — whatever changes them redraws all the blocks,
+  // not only the one clicked.
+  const fileRowsOf = new Map();       // setup id -> fileRow()s
+  const launchViewsOf = new Map();    // setup id -> launch views
+
+  function together(map, id, entry) {
+    if (!map.has(id)) map.set(id, []);
+    map.get(id).push(entry);
+  }
+
   // Puts the managed files back the way the build wrote them, then shows the
   // rows what they hold now.
-  function resetLine(setupId, rows) {
+  function resetLine(setupId) {
     const row = document.createElement("div");
     row.className = "setup-path";
     const btn = document.createElement("button");
@@ -758,7 +788,7 @@
         }
         btn.textContent = "{{t.reset_done}}";
         setTimeout(() => { btn.textContent = "{{t.reset_files}}"; }, RESET_SHOWN_MS);
-        rows.forEach((line) => line.load());
+        (fileRowsOf.get(setupId) || []).forEach((line) => line.load());
       } catch {
         said.textContent = "{{t.server_not_answering}}";
       } finally {
@@ -767,6 +797,104 @@
     });
     row.append(btn, said);
     return row;
+  }
+
+  // ▶: the server runs the setup's quit, build and run, and this page asks
+  // every second how far it got — only while something is moving.
+  const LAUNCH_POLL_MS = 1000;
+  const LAUNCH_MOVING = new Set(["quitting", "building", "starting", "waiting"]);
+  const PHASE_WORDS = {
+    quitting: "{{t.launch_quitting}}", building: "{{t.launch_building}}",
+    starting: "{{t.launch_starting}}", waiting: "{{t.launch_waiting}}",
+    running: "{{t.launch_running}}", done: "{{t.launch_done}}", failed: "{{t.launch_failed}}",
+  };
+  const following = new Set();
+  // The block whose ▶ was pressed opens to show a failure; the others with the
+  // same setup only say it.
+  let pressedView = null;
+
+  function sayLaunch(view, text, phase) {
+    view.status.textContent = text;
+    if (phase) view.status.dataset.phase = phase; else view.status.removeAttribute("data-phase");
+  }
+
+  function showLaunch(setupId, result) {
+    (launchViewsOf.get(setupId) || []).forEach((view) => {
+      const words = [PHASE_WORDS[result.phase], result.message].filter(Boolean);
+      sayLaunch(view, words.join(" — "), result.phase);
+      view.button.disabled = LAUNCH_MOVING.has(result.phase);
+      const failed = result.phase === "failed" && result.tail.length > 0;
+      view.tail.textContent = failed ? result.tail.join("\n") : "";
+      view.tail.hidden = !failed;
+      if (failed && view === pressedView) view.box.open = true;
+    });
+  }
+
+  async function followLaunch(setupId) {
+    if (following.has(setupId)) return;
+    following.add(setupId);
+    try {
+      for (;;) {
+        const res = await fetch("launch?setup=" + encodeURIComponent(setupId), { cache: "no-store" });
+        if (!res.ok) return;
+        const result = await res.json();
+        showLaunch(setupId, result);
+        if (!LAUNCH_MOVING.has(result.phase)) return;
+        await new Promise((resolve) => setTimeout(resolve, LAUNCH_POLL_MS));
+      }
+    } catch {
+      (launchViewsOf.get(setupId) || []).forEach((view) =>
+        sayLaunch(view, "{{t.server_not_answering}}", "failed"));
+    } finally {
+      following.delete(setupId);
+    }
+  }
+
+  async function startLaunch(setupId, view) {
+    pressedView = view;
+    view.button.disabled = true;
+    try {
+      const res = await fetch("launch", {
+        method: "POST",
+        headers: { "content-type": "application/json", "X-Checklist": "launch" },
+        body: JSON.stringify({ setup: setupId }),
+      });
+      if (!res.ok) {
+        sayLaunch(view, res.status === 409 ? "{{t.launch_busy}}" : await res.text(), "failed");
+        view.button.disabled = false;
+        return;
+      }
+    } catch {
+      sayLaunch(view, "{{t.server_not_answering}}", "failed");
+      view.button.disabled = false;
+      return;
+    }
+    followLaunch(setupId);
+  }
+
+  // ▶ and its status sit in the summary row. A click there would also fold
+  // the block, so the button keeps its click to itself.
+  function launchControls(setup, box) {
+    const wrap = document.createElement("span");
+    wrap.className = "launch";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = "▶ {{t.launch_start}}";
+    button.title = setup.launch.run;
+    const status = document.createElement("span");
+    status.className = "launch-status";
+    const tail = document.createElement("pre");
+    tail.className = "peek";
+    tail.hidden = true;
+    const view = { button, status, tail, box };
+    button.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      startLaunch(setup.id, view);
+    });
+    wrap.append(button, status);
+    together(launchViewsOf, setup.id, view);
+    return { wrap, tail };
   }
 
   // Check text, titles and setup arrive from the spec as markdown fragments. Only
@@ -809,25 +937,41 @@
 
   // What has to hold before the item: which app, which server, which files. Open,
   // because unread prerequisites are the costliest mistake in a checklist; whoever
-  // wants to quiet a long list down sets collapsed.
-  function setupBlock(setup) {
+  // wants to quiet a long list down sets collapsed. `sameAs` is the number of
+  // the item just before whose setup this one repeats — read once, it only
+  // needs saying, so the block starts folded.
+  function setupBlock(setup, sameAs) {
     const box = document.createElement("details");
     box.className = "setup";
-    box.open = setup.collapsed !== true;
+    box.open = !sameAs && setup.collapsed !== true;
     const head = document.createElement("summary");
-    head.textContent = setup.label || "{{t.setup_default}}";
+    head.append(setup.label || "{{t.setup_default}}");
+    if (sameAs) {
+      const same = document.createElement("span");
+      same.className = "same-as";
+      same.textContent = "· {{t.same_as}} " + sameAs;
+      head.append(same);
+    }
     box.append(head);
 
     const body = document.createElement("div");
     body.className = "setup-body";
+    // /launch, /peek and /reset go by setup id; a folder built before ids has none.
+    if (setup.id && setup.launch) {
+      const launch = launchControls(setup, box);
+      head.append(launch.wrap);
+      body.append(launch.tail);
+    }
     prose(setup.text, body);
     (setup.commands || []).forEach((command) => body.append(commandLine(command)));
     (setup.paths || []).forEach((entry) => body.append(pathLine(entry)));
-    // /peek and /reset go by setup id; a folder built before ids has no files.
     const rows = setup.id ? (setup.files || []).map((file, n) => fileRow(setup.id, file, n)) : [];
-    rows.forEach((line) => body.append(line.row));
+    rows.forEach((line) => {
+      body.append(line.row);
+      together(fileRowsOf, setup.id, line);
+    });
     if (rows.length && setup.files.some((file) => file.managed)) {
-      body.append(resetLine(setup.id, rows));
+      body.append(resetLine(setup.id));
     }
 
     const links = (setup.links || []).filter((link) => link && SAFE_URL.test(link.url || ""));
@@ -860,6 +1004,11 @@
 
     const list = document.getElementById("items");
     list.textContent = "";
+    const total = String(DOC.items.length);
+    const ordinal = (n) => String(n).padStart(Math.max(2, total.length), "0");
+    // The nearest item above that has a setup at all — a run of items sharing
+    // one reads it once, an item without a setup in between does not break it.
+    let previousSetup = null;
     DOC.items.forEach((item, i) => {
       const li = document.createElement("li");
       li.className = "item";
@@ -887,8 +1036,7 @@
       title.append(inlineMarkup(item.title));
       const num = document.createElement("span");
       num.className = "num";
-      const total = String(DOC.items.length);
-      num.textContent = `${String(i + 1).padStart(Math.max(2, total.length), "0")} / ${total.padStart(2, "0")}`;
+      num.textContent = `${ordinal(i + 1)} / ${total.padStart(2, "0")}`;
       const hint = document.createElement("span");
       hint.className = "hint";
       const chev = document.createElement("button");
@@ -973,7 +1121,12 @@
       row.append(btn, title, hint, num, chev);
       li.append(row);
 
-      if (item.setup) li.append(setupBlock(item.setup));
+      if (item.setup) {
+        const id = item.setup.id;
+        const repeats = id && previousSetup && previousSetup.id === id;
+        li.append(setupBlock(item.setup, repeats ? ordinal(previousSetup.number) : null));
+        previousSetup = { id, number: i + 1 };
+      }
 
       if (item.detail) {
         const d = document.createElement("div");
@@ -1181,5 +1334,7 @@
   render();
   initNotes();
   setStatus("");
+  // A launch may be under way from before a reload — ask once per setup.
+  launchViewsOf.forEach((_, setupId) => followLaunch(setupId));
   setInterval(heartbeat, 5000);
 </script>

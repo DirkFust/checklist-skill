@@ -29,8 +29,28 @@ A setup's files have two more routes, both reading `setups.json` only:
     Decoded with the declared encoding, else UTF-8; what does not decode, or
     holds NULs, is `binary` and has no lines.
 
+A setup with a frozen `launch` can be started from the page (▶), again from
+`setups.json` only — the commands are the build's, never the page's:
+
+  · `POST /launch {"setup": id}` → 202 `{"phase"}`; the steps run in a thread:
+    end the run an earlier ▶ of this server started (SIGTERM to its process
+    group, SIGKILL after 3 s) → `quit` (30 s, a failure is logged, not fatal)
+    → `build` (15 min, non-zero fails) → `run`, detached into a process group
+    of its own. Exited 0 within 3 s: `done` (an app that handed itself over).
+    Exited otherwise: `failed`. Alive with a `url`: `waiting` until the url
+    answers HTTP, then the browser opens it → `running`. 409 while a launch is
+    under way: one build at a time.
+  · `GET /launch?setup=<id>` → phase (idle | quitting | building | starting |
+    waiting | running | done | failed), message, `tail` (the last 20 lines
+    this launch wrote) and url. Every step writes into `launch.log` in the
+    folder, each under a header line with time, setup id, step and command.
+
+Whatever ▶ started and is still alive goes down with the server — on a stop,
+a SIGTERM, and the idle stop alike.
+
 Mutating POSTs carry `X-Checklist: <route>` — `reveal` for /reveal, `reset` for
-/reset — so the header sent for one action never passes for another.
+/reset, `launch` for /launch — so the header sent for one action never passes
+for another.
 
 Setups are not the page's to change. `state.json` names each item's setup by id,
 `setups.json` holds what the id stands for; GET fills the setups into the page,
@@ -64,9 +84,12 @@ is lost when it goes: everything was written at save time.
 import argparse
 import base64
 import codecs
+import contextlib
+import dataclasses
 import errno
 import hashlib
 import html
+import http.client
 import http.server
 import json
 import os
@@ -76,6 +99,7 @@ import shlex
 import shutil
 import signal
 import socketserver
+import ssl
 import subprocess
 import sys
 import threading
@@ -122,6 +146,24 @@ LINE_END_RE = re.compile(r"\r\n|\r|\n")
 LINE_RE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+")
 EOL_NAMES = {"\n": "lf", "\r\n": "crlf", "\r": "cr"}
 LOOPBACK_NAMES = ("127.0.0.1", "localhost")
+# ▶: every step writes here, in the working folder — a build's output is what
+# tells a failed launch apart from a slow one.
+LAUNCH_LOG = "launch.log"
+QUIT_TIMEOUT = 30
+BUILD_TIMEOUT = 15 * 60
+# A run that ends this quickly either detached itself (an app that hands over to
+# launchd and exits 0) or failed to start; one still alive is a server.
+SETTLE_SECONDS = 3
+KILL_GRACE = 3
+GROUP_POLL = 0.05
+READY_POLL = 0.5
+READY_PROBE_TIMEOUT = 1
+TAIL_LINES = 20
+# Enough for 20 lines of any sane width — the tail never reads the whole log.
+TAIL_BYTES = 64 * 1024
+IDLE, QUITTING, BUILDING, STARTING, WAITING, RUNNING, DONE, FAILED = (
+    "idle", "quitting", "building", "starting", "waiting", "running", "done", "failed")
+IN_PROGRESS = {QUITTING, BUILDING, STARTING, WAITING}
 # Never opened at all: the URL has just been handed over and the human may be
 # somewhere else entirely. That silence says nothing, so it gets an hour.
 GRACE_UNOPENED = 60 * 60
@@ -307,10 +349,272 @@ class Pulse:
         self.opened = False
 
 
+def open_url(url: str) -> None:
+    """The default browser, the way a click in the Finder picks it."""
+    subprocess.run(["open", url], check=False)
+
+
+def answers(url: str) -> bool:
+    """Whether anything answers HTTP at `url`. Any status counts — a dev server
+    saying 404 is up. Certificates go unchecked: a local https dev server has a
+    self-signed one, and this request carries nothing worth protecting."""
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme == "https":
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        connection = http.client.HTTPSConnection(parts.hostname, parts.port,
+                                                 timeout=READY_PROBE_TIMEOUT, context=context)
+    else:
+        connection = http.client.HTTPConnection(parts.hostname, parts.port,
+                                                timeout=READY_PROBE_TIMEOUT)
+    try:
+        connection.request("GET", urllib.parse.urlunsplit(("", "", parts.path or "/",
+                                                           parts.query, "")))
+        connection.getresponse()
+        return True
+    except (OSError, http.client.HTTPException):
+        return False
+    finally:
+        connection.close()
+
+
+def group_alive(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def end_group(process: subprocess.Popen, grace: float) -> bool:
+    """SIGTERM to the process's whole group, SIGKILL to whatever is left after
+    `grace`. False when the process had already exited: what it left running
+    then detached itself on purpose — an app handed over to launchd — and is
+    not ours to chase."""
+    if process.poll() is not None:
+        return False
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(process.pid, signal.SIGTERM)
+    deadline = time.monotonic() + grace
+    # Reaping the leader as it goes, or its zombie alone keeps the group alive.
+    while process.poll() is None or group_alive(process.pid):
+        if time.monotonic() >= deadline:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(process.pid, signal.SIGKILL)
+            break
+        time.sleep(GROUP_POLL)
+    process.wait()
+    return True
+
+
+class Stopping(Exception):
+    """The server is going down: no further step may start."""
+
+
+@dataclasses.dataclass
+class Launch:
+    """One press of ▶ for one setup: how far it got, and which stretch of
+    launch.log is its own."""
+    setup_id: str
+    start: int                              # offset in launch.log
+    url: str | None
+    phase: str = QUITTING
+    message: str = ""
+    end: int | None = None                  # set once a later launch writes
+    process: subprocess.Popen | None = None  # the run, once spawned
+
+
+class Launcher:
+    """▶ for one server: a setup's quit → build → run (→ url wait → open) in a
+    worker thread, its status per setup id, and at most one live run.
+
+    One launch at a time — a second ▶ during a build would start a parallel
+    build of the same project. Every step gets a process group of its own, so
+    stopping one reaches what it started too (a dev server's watcher, a
+    bundler) and nothing else. Timeouts and the opener are arguments so the
+    tests can run in fractions of a second and open no browser.
+    """
+
+    def __init__(self, root: pathlib.Path, opener=open_url, quit_timeout: float = QUIT_TIMEOUT,
+                 build_timeout: float = BUILD_TIMEOUT, settle: float = SETTLE_SECONDS,
+                 kill_grace: float = KILL_GRACE, poll: float = READY_POLL):
+        self.log = root / LAUNCH_LOG
+        self.opener = opener
+        self.quit_timeout, self.build_timeout = quit_timeout, build_timeout
+        self.settle, self.kill_grace, self.poll = settle, kill_grace, poll
+        self.lock = threading.Lock()
+        self.closing = threading.Event()
+        self.launches: dict[str, Launch] = {}
+        self.busy = False
+        self.step_process: subprocess.Popen | None = None   # a quit or build under way
+        self.live: Launch | None = None                     # whose run is ours
+
+    def start(self, setup_id: str, launch: dict) -> str | None:
+        """Start a launch; None if one is under way (or the server is stopping)."""
+        with self.lock:
+            if self.busy or self.closing.is_set():
+                return None
+            self.busy = True
+            start = self.log.stat().st_size if self.log.is_file() else 0
+            for earlier in self.launches.values():
+                if earlier.end is None:
+                    earlier.end = start
+            run = self.launches[setup_id] = Launch(setup_id, start, launch["url"])
+            phase = run.phase
+        threading.Thread(target=self.work, args=(run, launch), daemon=True).start()
+        return phase
+
+    def status_of(self, setup_id: str) -> dict:
+        with self.lock:
+            run = self.launches.get(setup_id)
+            if run is None:
+                return {"phase": IDLE, "message": "", "tail": [], "url": None}
+            # A server that was up may have gone down since — say so.
+            if run.phase == RUNNING and run.process.poll() is not None:
+                code = run.process.returncode
+                run.phase, run.message = (DONE if code == 0 else FAILED), f"run exited with {code}"
+            status = {"phase": run.phase, "message": run.message, "url": run.url}
+            start, end = run.start, run.end
+        return {**status, "tail": self.tail(start, end)}
+
+    def tail(self, start: int, end: int | None) -> list:
+        """The last lines of one launch's stretch of the log, read from its end."""
+        try:
+            with self.log.open("rb") as log:
+                stop = log.seek(0, os.SEEK_END) if end is None else end
+                begin = max(start, stop - TAIL_BYTES)
+                log.seek(begin)
+                chunk = log.read(stop - begin)
+        except FileNotFoundError:
+            return []
+        lines = chunk.decode("utf-8", "replace").splitlines()
+        if begin > start:
+            lines = lines[1:]               # cut off mid-line
+        return lines[-TAIL_LINES:]
+
+    def shutdown(self) -> bool:
+        """End whatever is ours: a step under way, the live run. True if
+        something was running and has been stopped."""
+        self.closing.set()
+        with self.lock:
+            step = self.step_process
+        stopped_step = step is not None and end_group(step, self.kill_grace)
+        return self.stop_live("stopped with the server") or stopped_step
+
+    def stop_live(self, why: str) -> bool:
+        with self.lock:
+            run, self.live = self.live, None
+            # Said before the signal, or a status read mid-kill would report the
+            # SIGTERM as a crash. A run whose url never answered stays `failed`.
+            if run is not None and run.phase == RUNNING and run.process.poll() is None:
+                run.phase, run.message = IDLE, why
+        return run is not None and end_group(run.process, self.kill_grace)
+
+    def set(self, run: Launch, phase: str, message: str = "") -> None:
+        with self.lock:
+            run.phase, run.message = phase, message
+
+    def header(self, run: Launch, step: str, command: str) -> None:
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        with self.log.open("a", encoding="utf-8") as log:
+            log.write(f"--- {stamp} {run.setup_id} {step}: {command}\n")
+
+    def spawn(self, run: Launch, step: str, command: str, cwd: str) -> subprocess.Popen:
+        """A step's process, in a group of its own, writing into the log. Under
+        the lock, so a shutdown either sees it or keeps it from starting."""
+        with self.lock:
+            if self.closing.is_set():
+                raise Stopping("the server is stopping")
+            self.header(run, step, command)
+            with self.log.open("ab") as log:
+                process = subprocess.Popen(["/bin/sh", "-c", command], cwd=cwd,
+                                           stdin=subprocess.DEVNULL, stdout=log,
+                                           stderr=subprocess.STDOUT, start_new_session=True)
+            if step == "run":
+                run.process, self.live = process, run
+            else:
+                self.step_process = process
+        return process
+
+    def step(self, run: Launch, step: str, command: str, cwd: str, timeout: float) -> str | None:
+        """Run a quit or build to its end; None if it exited 0, else what happened."""
+        process = self.spawn(run, step, command, cwd)
+        try:
+            code = process.wait(timeout)
+        except subprocess.TimeoutExpired:
+            end_group(process, self.kill_grace)
+            return f"{step} took longer than {timeout:g} s"
+        finally:
+            with self.lock:
+                self.step_process = None
+        return None if code == 0 else f"{step} exited with {code}"
+
+    def work(self, run: Launch, launch: dict) -> None:
+        try:
+            self.stop_live("stopped for the next launch")
+            self.steps(run, launch)
+        except (OSError, Stopping) as error:     # a cwd that is gone, a full disk
+            self.set(run, FAILED, str(error))
+        finally:
+            with self.lock:
+                self.busy = False
+
+    def steps(self, run: Launch, launch: dict) -> None:
+        cwd = launch["cwd"]
+        if launch["quit"]:
+            failure = self.step(run, "quit", launch["quit"], cwd, self.quit_timeout)
+            # The app may simply not have been running — no reason to stop here.
+            if failure:
+                self.set(run, QUITTING, f"{failure} — carrying on")
+        if launch["build"]:
+            self.set(run, BUILDING)
+            failure = self.step(run, "build", launch["build"], cwd, self.build_timeout)
+            if failure:
+                self.set(run, FAILED, failure)
+                return
+        self.set(run, STARTING)
+        process = self.spawn(run, "run", launch["run"], cwd)
+        try:
+            code = process.wait(self.settle)
+        except subprocess.TimeoutExpired:
+            code = None
+        if code is not None:
+            self.set(run, DONE if code == 0 else FAILED, "" if code == 0 else f"run exited with {code}")
+            return
+        if not run.url:
+            self.set(run, RUNNING)
+            return
+        self.set(run, WAITING)
+        failure = self.wait_ready(run.url, process, launch["ready_timeout"])
+        if failure:
+            self.set(run, FAILED, failure)
+            return
+        self.header(run, "open", run.url)
+        self.opener(run.url)
+        self.set(run, RUNNING)
+
+    def wait_ready(self, url: str, process: subprocess.Popen, timeout: float) -> str | None:
+        """None once `url` answers, else why it never will."""
+        deadline = time.monotonic() + timeout
+        while not answers(url):
+            code = process.poll()
+            if code is not None:
+                return f"run exited with {code} before {url} answered"
+            if time.monotonic() >= deadline:
+                return f"{url} did not answer within {timeout:g} s"
+            if self.closing.wait(self.poll):
+                return "the server is stopping"
+        return None
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     root: pathlib.Path
     restart: str        # command the page can offer for restarting the server
     pulse: Pulse
+    launcher: Launcher
 
     def parse_request(self) -> bool:
         """Refuse any request not addressed to this server by name and port.
@@ -381,9 +685,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         route = self.path.split("?", 1)[0].lstrip("/")
-        actions = {"reveal": self.reveal, "reset": self.reset}
+        actions = {"reveal": self.reveal, "reset": self.reset, "launch": self.launch}
         if route not in actions:
-            self.fail(404, "POST /reveal or /reset only")
+            self.fail(404, "POST /reveal, /reset or /launch only")
             return
         # A header of our own: a foreign page would first have to send a preflight,
         # and there is none here. Sec-Fetch-Site rules out the rest. Its value is
@@ -445,6 +749,39 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send(200, json.dumps({"reset": [name for name, _, _ in pairs]}).encode("utf-8"),
                   "application/json; charset=utf-8")
 
+    def launchable(self, setup_id) -> dict | None:
+        """A frozen setup's launch, or None once the client has been told why not."""
+        setup = self.frozen_setup(setup_id)
+        if setup is None:
+            return None
+        if not setup.get("launch"):
+            self.fail(404, f"setup {setup_id!r} has nothing to start")
+            return None
+        return setup["launch"]
+
+    def launch(self, body: dict) -> None:
+        """POST /launch {"setup": id} — 202 and the steps run in the background;
+        409 while an earlier launch is still under way."""
+        launch = self.launchable(body.get("setup"))
+        if launch is None:
+            return
+        phase = self.launcher.start(body["setup"], launch)
+        if phase is None:
+            self.fail(409, "a launch is already under way — wait for it to finish")
+            return
+        self.send(202, json.dumps({"phase": phase}).encode("utf-8"),
+                  "application/json; charset=utf-8")
+
+    def launch_status(self) -> None:
+        """GET /launch?setup=<id> — phase, message, the last log lines of this
+        launch, and its url; `idle` for a setup not launched by this server."""
+        query = urllib.parse.parse_qs(self.path.partition("?")[2])
+        setup_id = (query.get("setup") or [None])[0]
+        if self.launchable(setup_id) is None:
+            return
+        self.send(200, json.dumps(self.launcher.status_of(setup_id), ensure_ascii=False)
+                  .encode("utf-8"), "application/json; charset=utf-8")
+
     def reveal(self, body: dict) -> None:
         wanted = body.get("path", "")
         if wanted not in self.declared_paths():
@@ -484,6 +821,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         if path == "/peek":
             self.peek()
+            return
+        if path == "/launch":
+            self.launch_status()
             return
         for folder in SERVED_DIRS:
             prefix = f"/{folder}/"
@@ -567,13 +907,15 @@ class Server(socketserver.ThreadingTCPServer):
     daemon_threads = True
 
 
-def handler_for(root: pathlib.Path, pulse: Pulse, restart: str = "") -> type[Handler]:
+def handler_for(root: pathlib.Path, pulse: Pulse, restart: str = "",
+                launcher: Launcher | None = None) -> type[Handler]:
     """A Handler bound to one folder.
 
     A subclass rather than attributes set on Handler itself, so two servers in one
-    process — the tests start one per case — never share a folder.
+    process — the tests start one per case — never share a folder or a launch.
     """
-    return type("FolderHandler", (Handler,), {"root": root, "pulse": pulse, "restart": restart})
+    return type("FolderHandler", (Handler,), {"root": root, "pulse": pulse, "restart": restart,
+                                              "launcher": launcher or Launcher(root)})
 
 
 def listen(port: int, tries: int, handler: type[Handler]) -> tuple[Server, int]:
@@ -635,7 +977,8 @@ def main() -> None:
             sys.exit(f"{root}/{needed} is missing — build it first: build.py spec.json {args.folder}")
 
     pulse = Pulse()
-    handler = handler_for(root, pulse)
+    launcher = Launcher(root)
+    handler = handler_for(root, pulse, launcher=launcher)
     server, port = listen(args.port, PORT_TRIES, handler)
     handler.restart = shlex.join(
         ["python3", str(pathlib.Path(__file__).resolve()), str(root), "--port", str(port)])
@@ -670,7 +1013,13 @@ def main() -> None:
             pass
         finally:
             stop.set()
-        print("stopped — the state is in state.json", flush=True)
+            # Whatever ▶ started goes down with the server, the idle stop
+            # included — even a dev server someone still uses in another tab.
+            # Left running, it would hold its port with nobody to stop it.
+            ended = launcher.shutdown()
+        print("stopped — the state is in state.json"
+              + (f"; the process ▶ started was stopped too (log: {launcher.log})" if ended else ""),
+              flush=True)
 
 
 if __name__ == "__main__":

@@ -42,6 +42,17 @@
   "binary_no_preview": "Binary file — no preview.",
   "peek_truncated": "… cut off here",
 
+  "launch_start": "Start",
+  "launch_quitting": "quitting the old one…",
+  "launch_building": "building…",
+  "launch_starting": "starting…",
+  "launch_waiting": "waiting for the server…",
+  "launch_running": "running",
+  "launch_done": "started",
+  "launch_failed": "failed",
+  "launch_busy": "another start is still under way",
+  "same_as": "same as",
+
   "save": "Save",
   "saving": "Saving…",
   "saved": "Saved",
