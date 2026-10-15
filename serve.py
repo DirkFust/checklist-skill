@@ -43,8 +43,9 @@ A setup with a frozen `launch` can be started from the page (▶), again from
     group, SIGKILL after 3 s) → `quit` (30 s, a failure is logged, not fatal)
     → `run`, detached into a process group of its own. Exited 0 within 3 s: `done` (an app that handed itself over).
     Exited otherwise: `failed`. Alive with a `url`: `waiting` until the url
-    answers HTTP, then the browser opens it → `running`. 409 while a launch is
-    under way: one build at a time.
+    answers HTTP, then the browser opens it → `running`; no answer within
+    `ready_timeout` → `failed`, and the run, still alive, is ended. 409 while
+    a launch is under way: one build at a time.
   · `GET /launch?setup=<id>` → phase (idle | building | quitting | starting |
     waiting | running | done | failed), message, `tail` (the last 20 lines
     this launch wrote — the run's once it has one, else the build's and
@@ -716,6 +717,11 @@ class Launcher:
         self.set(run, WAITING)
         failure = self.wait_ready(run.url, process, launch["ready_timeout"])
         if failure:
+            # A run still alive after its url never answered is ours, and left
+            # alone it would serve on with the page saying `failed` — holding
+            # its port against the next ▶. A server going down ends it anyway.
+            if not self.closing.is_set() and self.stop_live("its url never answered"):
+                failure += " — stopped it"
             self.set(run, FAILED, failure)
             return
         self.header(run, "open", run.url)

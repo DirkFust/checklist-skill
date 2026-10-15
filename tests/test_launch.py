@@ -266,7 +266,8 @@ class UrlTest(LaunchTest):
         self.up = up
         self.LAUNCHES = {
             "ready": {"run": "sleep 30", "url": up},
-            "never": {"run": "sleep 30", "url": down, "ready_timeout": 1},
+            "never": {"run": "echo $$ > never.pid; exec sleep 30", "url": down,
+                      "ready_timeout": 1},
             "dies": {"run": f"sleep {SETTLE * 2}; exit 5", "url": down},
         }
         super().setUp()
@@ -288,10 +289,19 @@ class UrlTest(LaunchTest):
         self.assertIn("1 s", result["message"])
         self.assertEqual(self.opened, [])
 
+    def test_url_timeout_stops_the_run(self):
+        # Failed, yet still serving somewhere — with nothing on the page to
+        # say so, and its port taken for the next try.
+        result = self.launched("never")
+        self.assertTrue(result["message"].endswith(" — stopped it"), result["message"])
+        self.assertTrue(gone_soon(self.pid_of("never.pid")))
+        self.assertFalse(self.launcher.shutdown())
+
     def test_process_death_while_waiting(self):
         result = self.launched("dies")
         self.assertEqual(result["phase"], "failed")
         self.assertIn("5", result["message"])
+        self.assertNotIn("stopped it", result["message"])
         self.assertEqual(self.opened, [])
 
 

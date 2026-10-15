@@ -107,7 +107,8 @@ the output tail and whatever was running keeps running; then the run an earlier 
 server started goes down, its whole process group; `quit` for an app outside that group (a
 failure is passed by, it may not have been running); `run`, detached — exited 0 within 3 s is
 *done* (an app that handed itself over), alive is *running*. With a `url` it waits until that
-answers HTTP, then opens it. One live run per server. `build` and `quit` write into `launch.log`
+answers HTTP, then opens it; a url that never answers fails the launch and stops the run. One
+live run per server. `build` and `quit` write into `launch.log`
 in the working folder, the run into `launch-run.log` — read those before guessing when a human
 says ▶ failed. The server's idle stop ends what ▶ started too, so
 a dev server goes down with the checklist.
