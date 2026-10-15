@@ -804,6 +804,8 @@
   // every second how far it got — only while something is moving.
   const LAUNCH_POLL_MS = 1000;
   const LAUNCH_MOVING = new Set(["building", "quitting", "starting", "waiting"]);
+  // In the order a press runs them.
+  const LAUNCH_STEPS = ["build", "quit", "run", "url"];
   const PHASE_WORDS = {
     building: "{{t.launch_building}}", quitting: "{{t.launch_quitting}}",
     starting: "{{t.launch_starting}}", waiting: "{{t.launch_waiting}}",
@@ -877,7 +879,12 @@
     const button = document.createElement("button");
     button.type = "button";
     button.textContent = "▶ {{t.launch_start}}";
-    button.title = setup.launch.run;
+    // Every step a press runs, one per line — nothing ▶ executes stays out of
+    // sight, a project config's build or quit included.
+    button.title = LAUNCH_STEPS
+      .filter((step) => setup.launch[step])
+      .map((step) => step + ": " + setup.launch[step])
+      .join("\n");
     const status = document.createElement("span");
     status.className = "launch-status";
     const tail = document.createElement("pre");

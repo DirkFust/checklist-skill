@@ -114,8 +114,10 @@ says ▶ failed. The server's idle stop ends what ▶ started too, so
 a dev server goes down with the checklist.
 
 **The launch belongs to the project, not to each spec.** `checklist.json`, found walking up
-from the working folder's parent (the walk stops at the repository root or `$HOME`), holds
-what every checklist of the project shares: `lang`, `launch` and named `launches` profiles.
+from the working folder's parent (the walk stops at the repository root or `$HOME`; outside
+`$HOME` it happens only inside a repository), holds what every checklist of the project shares:
+`lang`, `launch` and named `launches` profiles. One that is not yours, or that group or others
+may write to, is skipped with a warning — it names commands ▶ runs.
 Write it the first time a project gets a checklist — a native app, then a web project:
 
     {"lang": "de",

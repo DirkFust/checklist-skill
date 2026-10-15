@@ -39,8 +39,11 @@ absolute path, whether the build manages it, and a declared encoding.
 
 Project config: `checklist.json`, the first one found walking up from the
 folder's parent; the walk stops at a directory with `.git` (inclusive) or at
-$HOME. It may hold `lang`, `launch` and `launches`, nothing else — what every
-checklist of a project shares, written down once.
+$HOME. Outside $HOME only a repository bounds it — without one there is no
+walk at all. A config that is not the user's own, or that group or others may
+write to, is skipped with a warning: it names commands ▶ runs. It may hold
+`lang`, `launch` and `launches`, nothing else — what every checklist of a
+project shares, written down once.
 
     {"lang": "de", "launch": {"build": "make app", "run": "open -a App {files}"},
      "launches": {"editor": {"run": "open -a Editor {files}"}}}
@@ -153,10 +156,12 @@ import codecs
 import dataclasses
 import html
 import json
+import os
 import pathlib
 import re
 import shlex
 import shutil
+import stat
 import sys
 import urllib.parse
 
@@ -395,20 +400,42 @@ def load_project(path: pathlib.Path) -> Project:
                    launch_profiles(raw.get("launches"), f"{path}, launches"))
 
 
-def find_project(start: pathlib.Path, stop: pathlib.Path) -> Project:
-    """The nearest `checklist.json` from `start` upwards.
+def searched_folders(start: pathlib.Path, stop: pathlib.Path) -> list:
+    """Where a project config may sit: `start` and its parents up to a
+    repository root (a `.git` there, inclusive) or `stop`, whichever comes
+    first. Outside `stop` only a repository bounds the walk — without one,
+    nothing is searched: a walk on to `/` would take a config out of
+    `/private/tmp` or any other folder whoever likes can write to."""
+    folders = []
+    for here in [start, *start.parents]:
+        folders.append(here)
+        if (here / ".git").exists() or here == stop:
+            return folders
+    return []
 
-    The walk ends at a repository root (a `.git` there, checked inclusive) or at
-    `stop` — a config in some unrelated folder further up must not reach into
-    this project. Nothing found: no config, and `start` is the root.
+
+def trusted(path: pathlib.Path) -> bool:
+    """A config may name commands ▶ runs, so it counts only if it is this
+    user's own and nobody else can write to it."""
+    info = path.stat()
+    if info.st_uid == os.getuid() and not info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        return True
+    print(f"warning: ignoring {path} — it is not yours or others can write to it",
+          file=sys.stderr)
+    return False
+
+
+def find_project(start: pathlib.Path, stop: pathlib.Path) -> Project:
+    """The nearest trusted `checklist.json` from `start` upwards, through the
+    folders `searched_folders` allows — a config in some unrelated folder
+    further up must not reach into this project. Nothing found: no config,
+    and `start` is the root.
     """
-    here = start
-    while True:
-        if (here / PROJECT_CONFIG).is_file():
-            return load_project(here / PROJECT_CONFIG)
-        if (here / ".git").exists() or here == stop or here.parent == here:
-            return Project(start, {}, None)
-        here = here.parent
+    for here in searched_folders(start, stop):
+        path = here / PROJECT_CONFIG
+        if path.is_file() and trusted(path):
+            return load_project(path)
+    return Project(start, {}, None)
 
 
 @dataclasses.dataclass(frozen=True)

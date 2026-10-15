@@ -2,9 +2,11 @@
 
 import copy
 import json
+import os
 import pathlib
 import tempfile
 import unittest
+from unittest import mock
 
 from helpers import Folder, build, build_into, read_json, run_quietly, sample_spec, stderr_of
 
@@ -316,6 +318,43 @@ class ProjectConfigTest(unittest.TestCase):
         (self.repo / build.PROJECT_CONFIG).unlink()
         self.config(self.top, {"lang": "de"})
         self.assertIsNone(build.find_project(self.start, self.repo).lang)
+
+    def test_outside_stop_without_a_repo_nothing_is_searched(self):
+        # A build into /tmp must not pick up /private/tmp/checklist.json from
+        # whoever wrote it there — its `build` would run on ▶.
+        elsewhere = self.top / "home"
+        elsewhere.mkdir()
+        self.config(self.start, {"lang": "de"})
+        self.config(self.top, {"lang": "de"})
+        self.assertEqual(build.find_project(self.start, elsewhere),
+                         build.Project(self.start, {}, None))
+
+    def test_outside_stop_a_repo_bounds_the_walk(self):
+        elsewhere = self.top / "home"
+        elsewhere.mkdir()
+        (self.repo / ".git").mkdir()
+        self.config(self.top, {"lang": "fr"})
+        self.assertIsNone(build.find_project(self.start, elsewhere).lang)
+        self.config(self.repo, {"lang": "de"})
+        self.assertEqual(build.find_project(self.start, elsewhere).lang, "de")
+
+    def test_config_writable_by_others_is_ignored_with_a_warning(self):
+        self.config(self.repo, {"lang": "de"})
+        path = self.repo / build.PROJECT_CONFIG
+        for mode in (0o664, 0o646):
+            path.chmod(mode)
+            project, warning = run_quietly(lambda: build.find_project(self.start, self.top))
+            self.assertIsNone(project.lang, oct(mode))
+            self.assertIn(str(path), warning)
+        path.chmod(0o644)
+        self.assertEqual(build.find_project(self.start, self.top).lang, "de")
+
+    def test_config_owned_by_someone_else_is_ignored_with_a_warning(self):
+        self.config(self.repo, {"lang": "de"})
+        with mock.patch.object(build.os, "getuid", return_value=os.getuid() + 1):
+            project, warning = run_quietly(lambda: build.find_project(self.start, self.top))
+        self.assertIsNone(project.lang)
+        self.assertIn(str(self.repo / build.PROJECT_CONFIG), warning)
 
     def test_unknown_key_aborts(self):
         self.config(self.repo, {"language": "de"})
