@@ -801,8 +801,11 @@
   }
 
   // ▶: the server runs the setup's build, quit and run, and this page asks
-  // every second how far it got — only while something is moving.
+  // every second how far it got while something is moving — and, more slowly,
+  // while it runs, so a server that crashes or is stopped by another setup's
+  // ▶ shows up without a reload.
   const LAUNCH_POLL_MS = 1000;
+  const LAUNCH_WATCH_MS = 5000;
   const LAUNCH_MOVING = new Set(["building", "quitting", "starting", "waiting"]);
   // In the order a press runs them.
   const LAUNCH_STEPS = ["build", "quit", "run", "url"];
@@ -811,7 +814,9 @@
     starting: "{{t.launch_starting}}", waiting: "{{t.launch_waiting}}",
     running: "{{t.launch_running}}", done: "{{t.launch_done}}", failed: "{{t.launch_failed}}",
   };
-  const following = new Set();
+  // setup id -> wakes its follower, so a ▶ pressed during the slow poll is
+  // followed at once rather than after it.
+  const following = new Map();
   // The block whose ▶ was pressed opens to show a failure; the others with the
   // same setup only say it.
   let pressedView = null;
@@ -833,17 +838,38 @@
     });
   }
 
+  function launchPause(phase) {
+    if (LAUNCH_MOVING.has(phase)) return LAUNCH_POLL_MS;
+    return phase === "running" ? LAUNCH_WATCH_MS : 0;
+  }
+
   async function followLaunch(setupId) {
-    if (following.has(setupId)) return;
-    following.add(setupId);
+    if (following.has(setupId)) {
+      following.get(setupId)();
+      return;
+    }
+    let wake = null;
+    let woken = false;
+    following.set(setupId, () => {
+      woken = true;
+      if (wake) wake();
+    });
     try {
       for (;;) {
+        woken = false;
         const res = await fetch("launch?setup=" + encodeURIComponent(setupId), { cache: "no-store" });
         if (!res.ok) return;
         const result = await res.json();
         showLaunch(setupId, result);
-        if (!LAUNCH_MOVING.has(result.phase)) return;
-        await new Promise((resolve) => setTimeout(resolve, LAUNCH_POLL_MS));
+        // Woken while asking: the answer may predate the new launch.
+        if (woken) continue;
+        const pause = launchPause(result.phase);
+        if (!pause) return;
+        await new Promise((resolve) => {
+          wake = resolve;
+          setTimeout(resolve, pause);
+        });
+        wake = null;
       }
     } catch {
       (launchViewsOf.get(setupId) || []).forEach((view) =>
