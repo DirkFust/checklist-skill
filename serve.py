@@ -129,6 +129,9 @@ SERVED_DIRS = ("images", "data", "bilder", "daten")
 SUFFIX = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif",
           "image/webp": "webp", "image/heic": "heic", "image/svg+xml": "svg"}
 MAX_BODY = 256 * 1024 * 1024
+# A POST carries one short field — a setup id or a path. Anything near this is
+# not the page talking.
+MAX_POST_BODY = 64 * 1024
 # Every read and write of state.json goes through this. The server is threaded,
 # so without it a GET can read the file while a PUT has truncated it — and two
 # tabs of the same checklist can overwrite each other's ticks between the read
@@ -817,13 +820,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return {entry.get("path") for setup in declared
                 for entry in [*(setup.get("paths") or []), *(setup.get("files") or [])]}
 
-    def body_length(self) -> int | None:
-        """The declared body size, or None once the client has been told why not."""
+    def body_length(self, limit: int) -> int | None:
+        """The declared body size, or None once the client has been told why not.
+        Above 0 and at most `limit`: a negative length would have the read wait
+        for a hang-up, and an unbounded one would read whatever is sent."""
         try:
-            return int(self.headers.get("Content-Length") or 0)
+            length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             self.fail(400, "Content-Length is not a number")
             return None
+        if length <= 0:
+            self.fail(400, "body missing")
+            return None
+        if length > limit:
+            self.fail(413, "body too large")
+            return None
+        return length
 
     def do_POST(self) -> None:
         route = self.path.split("?", 1)[0].lstrip("/")
@@ -841,12 +853,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if site is not None and site != "same-origin":
             self.fail(403, "foreign origin")
             return
-        length = self.body_length()
+        length = self.body_length(MAX_POST_BODY)
         if length is None:
             return
         try:
             body = json.loads(self.rfile.read(length))
-        except json.JSONDecodeError:
+        # ValueError covers bytes that are no text at all as well as bad JSON;
+        # RecursionError is JSON nested deeper than the parser goes.
+        except (ValueError, RecursionError):
             self.fail(400, "not valid JSON")
             return
         if not isinstance(body, dict):
@@ -1015,15 +1029,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.path.split("?", 1)[0] != "/state":
             self.fail(404, "PUT /state only")
             return
-        length = self.body_length()
+        length = self.body_length(MAX_BODY)
         if length is None:
-            return
-        if not 0 < length <= MAX_BODY:
-            self.fail(413, "body missing or too large")
             return
         try:
             incoming = json.loads(self.rfile.read(length))
-        except json.JSONDecodeError as error:
+        except (ValueError, RecursionError) as error:     # see do_POST
             self.fail(400, f"not valid JSON: {error}")
             return
         problem = state_problem(incoming)

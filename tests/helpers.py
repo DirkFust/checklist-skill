@@ -100,8 +100,10 @@ class RunningServer:
         self.launcher.shutdown()
 
     def request(self, method: str, path: str, body: bytes | None = None,
-                headers: dict | None = None, host: str | None = None):
-        """One request; returns (status, body bytes). `host` overrides Host."""
+                headers: dict | None = None, host: str | None = None,
+                length: str | None = None):
+        """One request; returns (status, body bytes). `host` overrides Host,
+        `length` the Content-Length that would match the body."""
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
         try:
             connection.putrequest(method, path, skip_host=host is not None)
@@ -109,7 +111,8 @@ class RunningServer:
                 connection.putheader("Host", host)
             for key, value in (headers or {}).items():
                 connection.putheader(key, value)
-            connection.putheader("Content-Length", str(len(body or b"")))
+            connection.putheader("Content-Length",
+                                 str(len(body or b"")) if length is None else length)
             connection.endheaders(body)
             response = connection.getresponse()
             return response.status, response.read()

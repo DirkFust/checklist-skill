@@ -95,6 +95,33 @@ class FrozenServerTest(unittest.TestCase):
             self.assertEqual(status, 400, (route, body, answer))
             self.assertIn(b"must be", answer)
 
+    # Not UTF-8 at all, and nested past Python's recursion limit — both used to
+    # end in an exception and a dropped connection rather than an answer. Kept
+    # under the POST cap, so the parser is what refuses them.
+    UNREADABLE_BODIES = (b"\xff\xfe\xfd", b"[" * 50_000)
+
+    def test_unreadable_post_bodies_are_400(self):
+        for body in self.UNREADABLE_BODIES:
+            status, _ = self.server.request("POST", "/reveal", body, {"X-Checklist": "reveal"})
+            self.assertEqual(status, 400, body[:8])
+
+    def test_unreadable_put_bodies_are_400(self):
+        before = (self.folder.path / "state.json").read_bytes()
+        for body in self.UNREADABLE_BODIES:
+            status, _ = self.server.request("PUT", "/state", body)
+            self.assertEqual(status, 400, body[:8])
+        self.assertEqual((self.folder.path / "state.json").read_bytes(), before)
+
+    def test_post_needs_a_body_of_sane_length(self):
+        # -1 once made the server read until the client hung up.
+        for length in ("-1", "0"):
+            status, _ = self.server.request("POST", "/reveal", b"", {"X-Checklist": "reveal"},
+                                            length=length)
+            self.assertEqual(status, 400, length)
+        status, _ = self.server.request("POST", "/reveal", b"", {"X-Checklist": "reveal"},
+                                        length=str(serve.MAX_POST_BODY + 1))
+        self.assertEqual(status, 413)
+
     def test_malformed_states_are_400(self):
         before = (self.folder.path / "state.json").read_bytes()
         good = self.server.page_state()
