@@ -21,6 +21,14 @@ class BuildTest(unittest.TestCase):
         self.assertEqual([item["title"] for item in state["items"]],
                          ["First", "Second", "Third"])
 
+    def test_title_is_escaped_in_the_title_element(self):
+        spec = {**sample_spec(), "title": "A </title><script>alert(1)</script> & B"}
+        build_into(spec, self.folder.path)
+        template = (self.folder.path / "template.html").read_text(encoding="utf-8")
+        self.assertIn("<title>A &lt;/title&gt;&lt;script&gt;alert(1)&lt;/script&gt; &amp; B"
+                      "</title>", template)
+        self.assertNotIn("<script>alert(1)", template)
+
     def test_unknown_item_key_aborts(self):
         spec = sample_spec()
         spec["items"][0]["notes"] = "typo"

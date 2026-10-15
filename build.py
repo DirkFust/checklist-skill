@@ -151,6 +151,7 @@ import argparse
 import base64
 import codecs
 import dataclasses
+import html
 import json
 import pathlib
 import re
@@ -842,8 +843,10 @@ def frame(shell: str, spec: dict, faces: str, table: dict, lang: str) -> str:
         if shell.count(placeholder) != 1:
             sys.exit(f"shell needs exactly one {placeholder}, found: {shell.count(placeholder)}")
     body = translate(shell, table, f"shell vs {lang}")
-    return (HEAD_OPEN + faces + HEAD_CLOSE
-            + body.replace("%%TITLE%%", spec.get("title", "Checklist")) + DOC_CLOSE)
+    # Escaped: the title is markup here, and a `</title>` in it would end the
+    # element and run whatever follows as part of the page.
+    title = html.escape(spec.get("title", "Checklist"))
+    return HEAD_OPEN + faces + HEAD_CLOSE + body.replace("%%TITLE%%", title) + DOC_CLOSE
 
 
 def document(spec: dict, folder: pathlib.Path, lang: str = DEFAULT_LANG,
