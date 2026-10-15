@@ -1,4 +1,4 @@
-"""▶: POST /launch runs a setup's quit → build → run (→ url wait → open),
+"""▶: POST /launch runs a setup's build → quit → run (→ url wait → open),
 GET /launch reports how far it got, and the server never leaves a run behind."""
 
 import http.server
@@ -171,6 +171,18 @@ class StepsTest(LaunchTest):
         self.assertEqual(self.launched("ok")["phase"], "done")
         self.assertFalse(alive(pid))
         self.assertEqual(self.server.launch_status("server")[1]["phase"], "idle")
+
+    def test_a_failed_build_leaves_the_previous_run_alive(self):
+        self.assertEqual(self.launched("server")["phase"], "running")
+        pid = self.pid_of("server.pid")
+        self.assertEqual(self.launched("broken")["phase"], "failed")
+        self.assertTrue(alive(pid))
+        self.assertEqual(self.server.launch_status("server")[1]["phase"], "running")
+
+    def test_build_comes_before_quit(self):
+        self.launched("ok")
+        log = (self.root / serve.LAUNCH_LOG).read_text(encoding="utf-8")
+        self.assertLess(log.index(" ok build: "), log.index(" ok quit: "))
 
     def test_shutdown_ends_the_run(self):
         self.launched("server")

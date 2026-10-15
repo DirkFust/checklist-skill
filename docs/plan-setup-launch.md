@@ -53,8 +53,8 @@ Fields, all optional, all strings except `ready_timeout` (seconds, int, default 
 | Field | Meaning |
 |---|---|
 | `cwd` | working directory for every step; `~` expanded; must be absolute; default: the project root (dir of the project config, else the folder's parent) |
-| `quit` | run first, awaited (timeout 30 s); failure is logged, not fatal |
-| `build` | awaited (timeout 15 min); non-zero exit → failed, output tail shown |
+| `build` | run first, awaited (timeout 15 min); non-zero exit → failed, output tail shown, nothing running is touched |
+| `quit` | after a successful build, right before `run`; awaited (timeout 30 s); failure is logged, not fatal |
 | `run` | spawned detached (`start_new_session=True`); required for ▶ to exist |
 | `url` | if set: after `run`, poll until an HTTP connection succeeds (any status), then `open` it; process death or timeout → failed |
 
@@ -116,10 +116,12 @@ old items without a match are listed on stderr (not silently dropped).
 ### Server endpoints (new)
 
 - `POST /launch` `{"setup": id}` → 202; runs in a thread. Only one launched
-  process per server: a new ▶ first terminates the previous `run` process group
-  (SIGTERM, 3 s, SIGKILL). Steps: quit → build → run → (url wait → open).
+  process per server: a new ▶ terminates the previous `run` process group
+  (SIGTERM, 3 s, SIGKILL) once its build has succeeded — a failed build leaves
+  the running app alone. Steps: build → stop previous → quit → run → (url wait
+  → open).
   Output of all steps appended to `<folder>/launch.log`.
-- `GET /launch?setup=id` → `{"phase": idle|quitting|building|starting|waiting|running|done|failed, "message", "tail": [last 20 log lines of this launch], "url"}`.
+- `GET /launch?setup=id` → `{"phase": idle|building|quitting|starting|waiting|running|done|failed, "message", "tail": [last 20 log lines of this launch], "url"}`.
   `done` = run exited 0 within 3 s (app detached itself, e.g. dft);
   `running` = still alive after 3 s (and url reachable if set).
 - `POST /reset` `{"setup": id}` → rewrites the setup's managed files from

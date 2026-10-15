@@ -33,14 +33,14 @@ A setup with a frozen `launch` can be started from the page (▶), again from
 `setups.json` only — the commands are the build's, never the page's:
 
   · `POST /launch {"setup": id}` → 202 `{"phase"}`; the steps run in a thread:
+    `build` (15 min, non-zero fails — and leaves whatever runs untouched) →
     end the run an earlier ▶ of this server started (SIGTERM to its process
     group, SIGKILL after 3 s) → `quit` (30 s, a failure is logged, not fatal)
-    → `build` (15 min, non-zero fails) → `run`, detached into a process group
-    of its own. Exited 0 within 3 s: `done` (an app that handed itself over).
+    → `run`, detached into a process group of its own. Exited 0 within 3 s: `done` (an app that handed itself over).
     Exited otherwise: `failed`. Alive with a `url`: `waiting` until the url
     answers HTTP, then the browser opens it → `running`. 409 while a launch is
     under way: one build at a time.
-  · `GET /launch?setup=<id>` → phase (idle | quitting | building | starting |
+  · `GET /launch?setup=<id>` → phase (idle | building | quitting | starting |
     waiting | running | done | failed), message, `tail` (the last 20 lines
     this launch wrote) and url. Every step writes into `launch.log` in the
     folder, each under a header line with time, setup id, step and command.
@@ -161,9 +161,9 @@ READY_PROBE_TIMEOUT = 1
 TAIL_LINES = 20
 # Enough for 20 lines of any sane width — the tail never reads the whole log.
 TAIL_BYTES = 64 * 1024
-IDLE, QUITTING, BUILDING, STARTING, WAITING, RUNNING, DONE, FAILED = (
-    "idle", "quitting", "building", "starting", "waiting", "running", "done", "failed")
-IN_PROGRESS = {QUITTING, BUILDING, STARTING, WAITING}
+IDLE, BUILDING, QUITTING, STARTING, WAITING, RUNNING, DONE, FAILED = (
+    "idle", "building", "quitting", "starting", "waiting", "running", "done", "failed")
+IN_PROGRESS = {BUILDING, QUITTING, STARTING, WAITING}
 # Never opened at all: the URL has just been handed over and the human may be
 # somewhere else entirely. That silence says nothing, so it gets an hour.
 GRACE_UNOPENED = 60 * 60
@@ -421,14 +421,14 @@ class Launch:
     setup_id: str
     start: int                              # offset in launch.log
     url: str | None
-    phase: str = QUITTING
+    phase: str
     message: str = ""
     end: int | None = None                  # set once a later launch writes
     process: subprocess.Popen | None = None  # the run, once spawned
 
 
 class Launcher:
-    """▶ for one server: a setup's quit → build → run (→ url wait → open) in a
+    """▶ for one server: a setup's build → quit → run (→ url wait → open) in a
     worker thread, its status per setup id, and at most one live run.
 
     One launch at a time — a second ▶ during a build would start a parallel
@@ -462,7 +462,8 @@ class Launcher:
             for earlier in self.launches.values():
                 if earlier.end is None:
                     earlier.end = start
-            run = self.launches[setup_id] = Launch(setup_id, start, launch["url"])
+            first = BUILDING if launch["build"] else QUITTING
+            run = self.launches[setup_id] = Launch(setup_id, start, launch["url"], first)
             phase = run.phase
         threading.Thread(target=self.work, args=(run, launch), daemon=True).start()
         return phase
@@ -554,7 +555,6 @@ class Launcher:
 
     def work(self, run: Launch, launch: dict) -> None:
         try:
-            self.stop_live("stopped for the next launch")
             self.steps(run, launch)
         except (OSError, Stopping) as error:     # a cwd that is gone, a full disk
             self.set(run, FAILED, str(error))
@@ -563,18 +563,22 @@ class Launcher:
                 self.busy = False
 
     def steps(self, run: Launch, launch: dict) -> None:
+        """Build first, and only then end what is running: a build that fails
+        leaves the app or server it would have replaced alive. Building beside
+        a running app is fine; replacing it is what has to wait."""
         cwd = launch["cwd"]
+        if launch["build"]:
+            failure = self.step(run, "build", launch["build"], cwd, self.build_timeout)
+            if failure:
+                self.set(run, FAILED, failure)
+                return
+        self.set(run, QUITTING)
+        self.stop_live("stopped for the next launch")
         if launch["quit"]:
             failure = self.step(run, "quit", launch["quit"], cwd, self.quit_timeout)
             # The app may simply not have been running — no reason to stop here.
             if failure:
                 self.set(run, QUITTING, f"{failure} — carrying on")
-        if launch["build"]:
-            self.set(run, BUILDING)
-            failure = self.step(run, "build", launch["build"], cwd, self.build_timeout)
-            if failure:
-                self.set(run, FAILED, failure)
-                return
         self.set(run, STARTING)
         process = self.spawn(run, "run", launch["run"], cwd)
         try:

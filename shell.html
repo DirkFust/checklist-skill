@@ -799,12 +799,12 @@
     return row;
   }
 
-  // ▶: the server runs the setup's quit, build and run, and this page asks
+  // ▶: the server runs the setup's build, quit and run, and this page asks
   // every second how far it got — only while something is moving.
   const LAUNCH_POLL_MS = 1000;
-  const LAUNCH_MOVING = new Set(["quitting", "building", "starting", "waiting"]);
+  const LAUNCH_MOVING = new Set(["building", "quitting", "starting", "waiting"]);
   const PHASE_WORDS = {
-    quitting: "{{t.launch_quitting}}", building: "{{t.launch_building}}",
+    building: "{{t.launch_building}}", quitting: "{{t.launch_quitting}}",
     starting: "{{t.launch_starting}}", waiting: "{{t.launch_waiting}}",
     running: "{{t.launch_running}}", done: "{{t.launch_done}}", failed: "{{t.launch_failed}}",
   };
