@@ -38,7 +38,8 @@ A setup with a frozen `launch` can be started from the page (▶), again from
 `setups.json` only — the commands are the build's, never the page's:
 
   · `POST /launch {"setup": id}` → 202 `{"phase"}`; the steps run in a thread:
-    `build` (15 min, non-zero fails — and leaves whatever runs untouched) →
+    `build` (15 min, non-zero fails — and leaves whatever runs untouched,
+    which the message then says) →
     end the run an earlier ▶ of this server started (SIGTERM to its process
     group, SIGKILL after 3 s) → `quit` (30 s, a failure is logged, not fatal)
     → `run`, detached into a process group of its own. Exited 0 within 3 s: `done` (an app that handed itself over).
@@ -611,6 +612,11 @@ class Launcher:
         stopped_step = step is not None and end_group(step, self.kill_grace)
         return self.stop_live("stopped with the server") or stopped_step
 
+    def live_alive(self) -> bool:
+        """Whether the run an earlier ▶ started is still up."""
+        with self.lock:
+            return self.live is not None and self.live.process.poll() is None
+
     def stop_live(self, why: str) -> bool:
         with self.lock:
             run, self.live = self.live, None
@@ -693,6 +699,10 @@ class Launcher:
         if launch["build"]:
             failure = self.step(run, "build", launch["build"], cwd, self.build_timeout)
             if failure:
+                # Said, because the old instance may be this very setup's: its
+                # `running` has just given way to this launch's status.
+                if self.live_alive():
+                    failure += " — the running instance was left as it was"
                 self.set(run, FAILED, failure)
                 return
         self.set(run, QUITTING)

@@ -103,8 +103,8 @@ right for a one-off.
 
 A setup with a `launch` gets a ▶ button, so the human does not copy build commands out of the
 page. A press runs **build → stop → quit → run**: `build` first — if it fails, the page shows
-the output tail and whatever was running keeps running; then the run an earlier ▶ of this
-server started goes down, its whole process group; `quit` for an app outside that group (a
+the output tail and whatever was running keeps running (the message says so); then the run an
+earlier ▶ of this server started goes down, its whole process group; `quit` for an app outside that group (a
 failure is passed by, it may not have been running); `run`, detached — exited 0 within 3 s is
 *done* (an app that handed itself over), alive is *running*. With a `url` it waits until that
 answers HTTP, then opens it; a url that never answers fails the launch and stops the run. One

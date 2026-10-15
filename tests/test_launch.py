@@ -116,6 +116,8 @@ class StepsTest(LaunchTest):
         "crash": {"run": "echo boom; exit 3"},
         "slow": {"build": "sleep 30", "run": "true"},
         "server": {"run": "echo $$ > server.pid; exec sleep 30"},
+        # Builds until break-build appears in its cwd, the folder's parent.
+        "toggle": {"build": "test ! -f break-build", "run": "echo $$ > toggle.pid; exec sleep 30"},
         "chatty": {"run": "seq 1 500"},
         "noisy": {"run": "while :; do echo noise; sleep 0.02; done"},
         "slow-broken": {"build": "echo compile error; sleep 0.5; exit 2", "run": "true"},
@@ -153,6 +155,7 @@ class StepsTest(LaunchTest):
         result = self.launched("broken")
         self.assertEqual(result["phase"], "failed")
         self.assertIn("2", result["message"])
+        self.assertNotIn("left as it was", result["message"])
         self.assertIn("compile error", result["tail"])
         self.assertNotIn("never", "".join(result["tail"]))
 
@@ -195,9 +198,23 @@ class StepsTest(LaunchTest):
     def test_a_failed_build_leaves_the_previous_run_alive(self):
         self.assertEqual(self.launched("server")["phase"], "running")
         pid = self.pid_of("server.pid")
-        self.assertEqual(self.launched("broken")["phase"], "failed")
+        result = self.launched("broken")
+        self.assertEqual(result["phase"], "failed")
+        self.assertEqual(result["message"],
+                         "build exited with 2 — the running instance was left as it was")
         self.assertTrue(alive(pid))
         self.assertEqual(self.server.launch_status("server")[1]["phase"], "running")
+
+    def test_a_failed_rebuild_of_the_same_setup_says_the_old_run_is_alive(self):
+        # The new launch takes the setup's status over, so the message is the
+        # only place left that says something still runs.
+        self.assertEqual(self.launched("toggle")["phase"], "running")
+        pid = self.pid_of("toggle.pid")
+        (self.root.parent / "break-build").touch()
+        result = self.launched("toggle")
+        self.assertEqual(result["phase"], "failed")
+        self.assertIn("left as it was", result["message"])
+        self.assertTrue(alive(pid))
 
     def test_build_comes_before_quit(self):
         self.launched("ok")
