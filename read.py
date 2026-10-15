@@ -29,6 +29,11 @@ extended without losing what the human already put in: read it, add the new
 items, rebuild **into the same folder** (the attachments stay where they are).
 That is a conversion, not a result, and sets no marker. `--json` prints the raw
 state.
+
+Setups are not in the state any more, only their ids — `setups.json` keeps each
+inline setup exactly as the spec gave it, and `--as-spec` puts that back in place.
+Folders built before then still carry the setup object in the state; that is
+what goes back for them.
 """
 
 import argparse
@@ -39,6 +44,8 @@ import sys
 
 TOKEN = {"open": "[ ]", "ok": "[x]", "problem": "[!]", "skipped": "[-]"}
 READ_MARK = ".read"
+# Written by build.py beside state.json; absent in folders built before it.
+SETUPS_FILE = "setups.json"
 
 
 def mark_read(folder: pathlib.Path, state: dict) -> bool:
@@ -62,6 +69,25 @@ def load(folder: pathlib.Path) -> dict:
         return json.loads(state.read_text(encoding="utf-8"))
     except json.JSONDecodeError as broken:
         sys.exit(f"{state} is not valid JSON: {broken}")
+
+
+def load_setups(folder: pathlib.Path) -> dict | None:
+    """The frozen setups file, or None for a folder built before there was one."""
+    path = folder / SETUPS_FILE
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as broken:
+        sys.exit(f"{path} is not valid JSON: {broken}")
+
+
+def spec_setup(setup, frozen: dict | None):
+    """An item's setup as the spec wrote it: the raw inline source for an id,
+    the state's own object for a folder without frozen setups."""
+    if isinstance(setup, str) and frozen is not None:
+        return frozen.get("source", {}).get("inline", {}).get(setup)
+    return setup
 
 
 def indent(text: str, pad: str) -> str:
@@ -150,13 +176,14 @@ def report(folder: pathlib.Path, state: dict) -> list[str]:
     return lines
 
 
-def as_spec(state: dict) -> dict:
+def as_spec(state: dict, frozen: dict | None = None) -> dict:
     """The state in the shape `build.py` reads.
 
     Rebuilding overwrites `state.json` and with it every tick, note and image
     reference. Hand-copying those back is where they get lost, so the conversion
     lives here: `meta.*` moves back up top, `meta.folder` (which serve.py stamps
-    in and no spec knows) is dropped, and attachments keep their paths.
+    in and no spec knows) is dropped, attachments keep their paths, and setups
+    come back from `frozen` (the parsed `setups.json`) in their raw form.
     """
     meta = state.get("meta") or {}
     notes = state.get("notes") or {}
@@ -178,8 +205,9 @@ def as_spec(state: dict) -> dict:
                 "collapsed": bool(item.get("collapsed")),
                 "note": item.get("note", ""),
                 "images": item.get("images") or []}
-        if item.get("setup"):
-            kept["setup"] = item["setup"]
+        setup = spec_setup(item.get("setup"), frozen)
+        if setup:
+            kept["setup"] = setup
         spec["items"].append(kept)
     return spec
 
@@ -196,7 +224,7 @@ def main() -> None:
     folder = pathlib.Path(a.folder).expanduser().resolve()
     state = load(folder)
     if a.as_spec:
-        print(json.dumps(as_spec(state), ensure_ascii=False, indent=2))
+        print(json.dumps(as_spec(state, load_setups(folder)), ensure_ascii=False, indent=2))
         return
     if a.json:
         mark_read(folder, state)

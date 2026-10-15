@@ -3,9 +3,16 @@
 
     build.py spec.json folder [--shell shell.html] [--lang en]
 
-The folder gets `template.html` and `state.json`. `%%STATE%%` stays open in the
-template — `serve.py` fills the state in on every request and takes it back via
-PUT.
+The folder gets `template.html`, `state.json` and `setups.json`. `%%STATE%%`
+stays open in the template — `serve.py` fills the state in on every request and
+takes it back via PUT.
+
+Setups are frozen here, not carried in the state. The state is what the page
+writes back, and a setup names paths the server will reveal — so the page must
+not be able to change them. `state.json` items carry only a setup id (`item-NN`
+for an inline setup, 1-based); `setups.json` holds the resolved setup per id
+under `setups`, and under `source.inline` the setup exactly as the spec gave it,
+so `read.py --as-spec` can hand it back to this script unchanged.
 
 Spec format:
 
@@ -63,6 +70,9 @@ import re
 import sys
 
 STATES = {"open", "ok", "problem", "skipped"}
+SETUPS_FILE = "setups.json"
+# Two digits keep the ids sorting in item order for any list a human ticks off.
+INLINE_SETUP_ID = "item-{:02d}"
 
 # A key nobody reads is worse than an error: the spec looks complete and the
 # content is missing anyway. So what is allowed is written down here, and
@@ -231,12 +241,14 @@ def frame(shell: str, spec: dict, faces: str, table: dict, lang: str) -> str:
             + body.replace("%%TITLE%%", spec.get("title", "Checklist")) + DOC_CLOSE)
 
 
-def document(spec: dict) -> dict:
+def document(spec: dict) -> tuple[dict, dict]:
+    """The initial state and the frozen setups it refers to by id."""
     only(spec, SPEC_KEYS, "spec")
     if not isinstance(spec.get("items"), list) or not spec["items"]:
         sys.exit("spec: items must be a non-empty list")
 
     items = []
+    resolved_setups, inline_sources = {}, {}
     for number, raw in enumerate(spec["items"], 1):
         only(raw, ITEM_KEYS, f"item {number}")
         if not raw.get("title"):
@@ -245,10 +257,16 @@ def document(spec: dict) -> dict:
         if state not in STATES:
             sys.exit(f"item {number}: unknown state {state!r} — "
                      f"allowed: {', '.join(sorted(STATES))}")
+        setup = setup_of(raw, f"item {number}")
+        setup_id = None
+        if setup is not None:
+            setup_id = INLINE_SETUP_ID.format(number)
+            resolved_setups[setup_id] = setup
+            inline_sources[setup_id] = raw["setup"]
         items.append({
             "title": raw["title"],
             "detail": raw.get("detail", ""),
-            "setup": setup_of(raw, f"item {number}"),
+            "setup": setup_id,
             "state": state,
             "collapsed": bool(raw.get("collapsed", False)),
             "note": raw.get("note", ""),
@@ -262,7 +280,7 @@ def document(spec: dict) -> dict:
         sys.exit("notes must be text or an object {text, images}")
     only(notes, {"text", "images"}, "notes")
 
-    return {
+    state = {
         "meta": {
             "eyebrow": spec.get("eyebrow", ""),
             "heading": spec.get("heading", spec.get("title", "")),
@@ -274,6 +292,7 @@ def document(spec: dict) -> dict:
         "items": items,
         "notes": {"text": notes.get("text", ""), "images": images_of(notes, "notes")},
     }
+    return state, {"setups": resolved_setups, "source": {"inline": inline_sources}}
 
 
 def build(spec: dict, shell: str, faces: str, table: dict, lang: str,
@@ -281,8 +300,11 @@ def build(spec: dict, shell: str, faces: str, table: dict, lang: str,
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "template.html").write_text(
         frame(shell, spec, faces, table, lang), encoding="utf-8")
+    state, frozen = document(spec)
     (folder / "state.json").write_text(
-        json.dumps(document(spec), ensure_ascii=False, indent=2), encoding="utf-8")
+        json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    (folder / SETUPS_FILE).write_text(
+        json.dumps(frozen, ensure_ascii=False, indent=2), encoding="utf-8")
     # A rebuild opens a fresh round of ticking, so an earlier read is spent —
     # otherwise a serve.py on this folder would time itself out on stale news.
     (folder / ".read").unlink(missing_ok=True)

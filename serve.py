@@ -14,7 +14,18 @@ there is no size limit here, and no reason to shrink anything.
 Two routes lead to test data: whatever the browser can display lives under
 `data/` in the working folder and is linked over `http`. Whatever has to sit in
 the project gets a button that sends `POST /reveal` — the server reveals the path
-in the Finder. Only paths written in `state.json` are allowed.
+in the Finder. Only paths the build froze into `setups.json` are allowed.
+
+Setups are not the page's to change. `state.json` names each item's setup by id,
+`setups.json` holds what the id stands for; GET fills the setups into the page,
+PUT throws away whatever setup the page sends back and keeps the ids on disk.
+Folders built before `setups.json` existed carry the setup objects in the state
+and are served as they always were.
+
+Every request has to name this server in its `Host` header — `127.0.0.1:<port>`
+or `localhost:<port>`. A page on a foreign domain that has been re-pointed at
+127.0.0.1 (DNS rebinding) counts as same-origin to the browser; its Host header
+still carries the foreign name, and that is where it gets stopped.
 
 Binds to 127.0.0.1 and nothing else, and the page it serves fetches nothing over
 the network — the webfaces are inlined. The server runs while someone is ticking
@@ -74,6 +85,9 @@ LOCK = threading.RLock()
 PORT_TRIES = 20
 # read.py drops this beside state.json once it has taken the results.
 READ_MARK = ".read"
+# Written by build.py; absent in folders built before setups were frozen.
+SETUPS_FILE = "setups.json"
+LOOPBACK_NAMES = ("127.0.0.1", "localhost")
 # Never opened at all: the URL has just been handed over and the human may be
 # somewhere else entirely. That silence says nothing, so it gets an hour.
 GRACE_UNOPENED = 60 * 60
@@ -146,6 +160,40 @@ def write_state(root: pathlib.Path, state: dict) -> None:
         os.replace(scratch, target)
 
 
+def read_setups(root: pathlib.Path) -> dict | None:
+    """The frozen setups by id, or None for a folder built before they existed."""
+    path = root / SETUPS_FILE
+    if not path.is_file():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))["setups"]
+
+
+def inject(state: dict, setups: dict | None) -> dict:
+    """The state as the page sees it: each setup id replaced by what it stands for.
+
+    The id travels along, so the page can tell two items with the same setup
+    apart from two that merely look alike.
+    """
+    if setups is None:
+        return state
+    items = [{**item, "setup": {"id": item["setup"], **setups[item["setup"]]}}
+             if isinstance(item.get("setup"), str) and item["setup"] in setups
+             else item
+             for item in state.get("items", [])]
+    return {**state, "items": items}
+
+
+def pin_setups(state: dict, on_disk: dict) -> dict:
+    """Put the on-disk setup ids back, whatever the page sent along.
+
+    Matched by position: the page can tick, note and attach, but it cannot add,
+    drop or reorder items — the caller has checked the counts agree.
+    """
+    items = [{**item, "setup": kept.get("setup")}
+             for item, kept in zip(state["items"], on_disk.get("items", []))]
+    return {**state, "items": items}
+
+
 def normalize(state: dict, folder: pathlib.Path) -> dict:
     items = []
     for raw in state.get("items", []):
@@ -184,6 +232,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
     restart: str        # command the page can offer for restarting the server
     pulse: Pulse
 
+    def parse_request(self) -> bool:
+        """Refuse any request not addressed to this server by name and port.
+
+        Checked here rather than per method, so no route can forget it.
+        """
+        if not super().parse_request():
+            return False
+        port = self.server.server_address[1]
+        allowed = {f"{name}:{port}" for name in LOOPBACK_NAMES}
+        if (self.headers.get("Host") or "").lower() not in allowed:
+            self.fail(403, "foreign host")
+            return False
+        return True
+
     def handle_one_request(self):
         # Every request is a sign of life — the page knocks by itself while it is
         # open, so silence is what tells the watchdog nobody is looking any more.
@@ -215,11 +277,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def declared_paths(self) -> set:
-        """Reveal only what the checklist declares — never what someone hands in."""
-        state = read_state(self.root)
-        return {entry.get("path")
-                for item in state.get("items", [])
-                for entry in ((item.get("setup") or {}).get("paths") or [])}
+        """Reveal only what the checklist declares — never what someone hands in.
+
+        With frozen setups that is `setups.json` alone: the state is written by
+        the page, so whatever it names proves nothing.
+        """
+        setups = read_setups(self.root)
+        if setups is not None:
+            declared = setups.values()
+        else:
+            declared = [item.get("setup") or {} for item in read_state(self.root).get("items", [])]
+        return {entry.get("path") for setup in declared for entry in (setup.get("paths") or [])}
 
     def body_length(self) -> int | None:
         """The declared body size, or None once the client has been told why not."""
@@ -279,7 +347,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path in ("/", "/index.html"):
             self.pulse.opened = True
             template = (self.root / "template.html").read_text(encoding="utf-8")
-            state = read_state(self.root)
+            state = inject(read_state(self.root), read_setups(self.root))
             page = (template.replace("%%STATE%%", escape(state))
                             .replace("%%RESTART%%", html.escape(self.restart))
                             .replace("%%FOLDER%%", html.escape(str(self.root))))
@@ -313,10 +381,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except json.JSONDecodeError as error:
             self.fail(400, f"not valid JSON: {error}")
             return
+        setups = read_setups(self.root)
         # Materializing, writing and sweeping are one step: a second tab saving in
         # between would sweep away the attachments this save has just written.
         with LOCK:
+            # Checked before normalizing: that already writes attachments, and a
+            # refused save must not leave files behind.
+            on_disk = read_state(self.root)
+            if setups is not None:
+                expected, got = len(on_disk.get("items", [])), len(incoming.get("items") or [])
+                if got != expected:
+                    self.fail(409, f"the checklist has {expected} items, this save has {got} — "
+                                   f"reload the page; items cannot be added or removed from it")
+                    return
             state = normalize(incoming, self.root / SHOTS)
+            if setups is not None:
+                state = pin_setups(state, on_disk)
             write_state(self.root, state)
             gone = sweep(state, self.root / SHOTS)
             # There is something new here, so the last read is spent: whoever is
@@ -324,7 +404,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             (self.root / READ_MARK).unlink(missing_ok=True)
         shots = sum(len(b["images"]) for b in [*state["items"], state["notes"]])
         sys.stderr.write(f"  saved — {shots} attachment(s), {gone} orphan(s) removed\n")
-        self.send(200, json.dumps(state, ensure_ascii=False).encode("utf-8"),
+        self.send(200, json.dumps(inject(state, setups), ensure_ascii=False).encode("utf-8"),
                   "application/json; charset=utf-8")
 
 
@@ -333,7 +413,16 @@ class Server(socketserver.ThreadingTCPServer):
     daemon_threads = True
 
 
-def listen(port: int, tries: int) -> tuple[Server, int]:
+def handler_for(root: pathlib.Path, pulse: Pulse, restart: str = "") -> type[Handler]:
+    """A Handler bound to one folder.
+
+    A subclass rather than attributes set on Handler itself, so two servers in one
+    process — the tests start one per case — never share a folder.
+    """
+    return type("FolderHandler", (Handler,), {"root": root, "pulse": pulse, "restart": restart})
+
+
+def listen(port: int, tries: int, handler: type[Handler]) -> tuple[Server, int]:
     """Bind the first free port from `port` upwards.
 
     The default port is shared by every checklist, and several are often open at
@@ -344,7 +433,7 @@ def listen(port: int, tries: int) -> tuple[Server, int]:
     """
     for offset in range(tries):
         try:
-            return Server(("127.0.0.1", port + offset), Handler), port + offset
+            return Server(("127.0.0.1", port + offset), handler), port + offset
         except OSError as busy:
             if busy.errno not in (errno.EADDRINUSE, errno.EACCES):
                 raise
@@ -391,10 +480,10 @@ def main() -> None:
         if not (root / needed).is_file():
             sys.exit(f"{root}/{needed} is missing — build it first: build.py spec.json {args.folder}")
 
-    Handler.root = root
-    Handler.pulse = pulse = Pulse()
-    server, port = listen(args.port, PORT_TRIES)
-    Handler.restart = shlex.join(
+    pulse = Pulse()
+    handler = handler_for(root, pulse)
+    server, port = listen(args.port, PORT_TRIES, handler)
+    handler.restart = shlex.join(
         ["python3", str(pathlib.Path(__file__).resolve()), str(root), "--port", str(port)])
     url = f"http://127.0.0.1:{port}/"
     with server:
