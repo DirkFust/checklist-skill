@@ -12,7 +12,9 @@ PUT.
 
 Every build rewrites the test data, `--merge` included: what a round of testing
 did to it is not a result. Files an earlier build wrote that the spec no longer
-names go; anything else in `data/` (a script's output) stays. `--clean` removes
+names go; anything else in `data/` (a script's output) stays. A file the build
+would write that is a symlink, or lies in a folder resolving elsewhere, aborts:
+the write would land on whatever the link points at. `--clean` removes
 `data/` and `.pristine/` whole and touches nothing else — state, images,
 setups and template stay.
 
@@ -508,17 +510,32 @@ def write_data(folder: pathlib.Path, files: dict) -> None:
     generated it, and it is not the build's to remove.
     """
     data, pristine = folder / DATA_DIR, folder / PRISTINE_DIR
+    targets = [(data_target(base, name), file.content)
+               for name, file in files.items() for base in (data, pristine)]
     built = [path.relative_to(pristine).as_posix()
              for path in pristine.rglob("*") if path.is_file()] if pristine.is_dir() else []
     for name in built:
         if name not in files:
             for base in (data, pristine):
                 remove_built(folder, base, name)
-    for name, file in files.items():
-        for base in (data, pristine):
-            target = base / name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(file.content)
+    for target, content in targets:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # A fresh file rather than a write into the old one: a hard link would
+        # carry the write to its other name, outside the folder.
+        target.unlink(missing_ok=True)
+        target.write_bytes(content)
+
+
+def data_target(base: pathlib.Path, name: str) -> pathlib.Path:
+    """Where `name` goes under `base` (data/ or .pristine/) — aborting when that
+    is a symlink, or a folder on the way resolves elsewhere: the write would
+    land on whatever the link points at."""
+    home = base.parent.resolve() / base.name
+    target = home / name
+    if home.is_symlink() or target.is_symlink() or not target.parent.resolve().is_relative_to(home):
+        sys.exit(f"{target} is a symlink or leads out of {home} — the build will not write "
+                 f"through it; remove the link and build again")
+    return target
 
 
 def clean(folder: pathlib.Path) -> list:

@@ -24,7 +24,10 @@ A setup's files have two more routes, both reading `setups.json` only:
   · `POST /reset {"setup": id}` copies the setup's managed files back from
     `.pristine/`, where the build left an untouched copy → `{"reset": [names]}`.
     External files are never written. All copies are checked first; one missing
-    → 409 and nothing is touched.
+    → 409 and nothing is touched. So is a managed file (or its copy) that is a
+    symlink or sits in a folder resolving out of `data/` (`.pristine/`) — a
+    reset must not write through a link to somewhere else; /peek refuses those
+    the same way.
   · `GET /peek?setup=<id>&file=<index>` → name, size, encoding, bom, eol
     (lf | crlf | cr | mixed | none), final_newline, binary, and at most 400
     `lines`, each with its line end still on it (`truncated` says if more).
@@ -98,7 +101,6 @@ import os
 import pathlib
 import re
 import shlex
-import shutil
 import signal
 import socketserver
 import ssl
@@ -296,16 +298,29 @@ def peek(name: str, content: bytes, encoding: str | None) -> dict:
             "lines": lines[:PEEK_LINES], "truncated": len(lines) > PEEK_LINES}
 
 
+def contained(base: pathlib.Path, name: str) -> pathlib.Path | None:
+    """`base/name` if it stays inside `base`, else None: a name that could
+    climb out, a file that is a symlink, a folder on the way (or `base`
+    itself) that resolves elsewhere. A reset writes there, so a link planted
+    under data/ would otherwise have it overwrite whatever the link points at.
+    """
+    if not all(SEGMENT_RE.match(part) for part in name.split("/")):
+        return None
+    home = base.parent.resolve() / base.name
+    path = home / name
+    if home.is_symlink() or path.is_symlink() or not path.parent.resolve().is_relative_to(home):
+        return None
+    return path
+
+
 def file_location(root: pathlib.Path, entry: dict) -> pathlib.Path | None:
     """Where a setup's file is. A managed one sits under this folder's data/ —
     found by name rather than by the frozen path, so a folder that was moved
-    still resets and previews its own files. None for a name that could climb
-    out of there."""
+    still resets and previews its own files. None for a managed one that is
+    not safely in there (see `contained`)."""
     if not entry.get("managed"):
         return pathlib.Path(entry["path"])
-    if not all(SEGMENT_RE.match(part) for part in entry["name"].split("/")):
-        return None
-    return root / DATA_DIR / entry["name"]
+    return contained(root / DATA_DIR, entry["name"])
 
 
 def pin_setups(state: dict, on_disk: dict) -> dict:
@@ -764,14 +779,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not entry.get("managed"):
                 continue
             target = file_location(self.root, entry)
-            source = self.root / PRISTINE_DIR / entry["name"] if target else None
-            if source is None or not source.is_file():
+            source = contained(self.root / PRISTINE_DIR, entry["name"])
+            if target is None or source is None:
+                self.fail(409, f"{entry['name']} is a symlink or leads out of "
+                               f"{DATA_DIR}/ or {PRISTINE_DIR}/ — refusing to reset it; "
+                               f"remove the link or rebuild the folder")
+                return
+            if not source.is_file():
                 self.fail(409, f"no pristine copy of {entry['name']} — rebuild the folder")
                 return
             pairs.append((entry["name"], source, target))
         for _, source, target in pairs:
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source, target)
+            # A fresh file rather than a write into the old one: a hard link
+            # would carry the write to its other name, outside data/.
+            target.unlink(missing_ok=True)
+            target.write_bytes(source.read_bytes())
         self.send(200, json.dumps({"reset": [name for name, _, _ in pairs]}).encode("utf-8"),
                   "application/json; charset=utf-8")
 
@@ -878,7 +901,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         entry = files[int(index)]
         target = file_location(self.root, entry)
-        if target is None or not target.is_file():
+        if target is None:
+            self.fail(409, f"{entry['name']} is a symlink or leads out of {DATA_DIR}/ — "
+                           f"not previewing it")
+            return
+        if not target.is_file():
             self.fail(404, f"{entry['path']} does not exist"
                            + (" — reset the files" if entry.get("managed") else ""))
             return

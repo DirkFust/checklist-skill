@@ -6,6 +6,7 @@ import contextlib
 import copy
 import io
 import json
+import os
 import pathlib
 import shlex
 import subprocess
@@ -162,6 +163,43 @@ class DataBuildTest(unittest.TestCase):
             self.assertEqual((self.root / folder / "keep.txt").read_text(encoding="utf-8"), "1")
         # Not the build's to remove: it never wrote that file.
         self.assertTrue(stranger.is_file())
+
+    def test_rebuild_refuses_a_symlinked_data_file(self):
+        with tempfile.TemporaryDirectory() as elsewhere:
+            outside = pathlib.Path(elsewhere) / "precious.txt"
+            outside.write_text("keep me", encoding="utf-8")
+            build_into(data_spec({"a.txt": "x"}), self.root)
+            for base in (build.DATA_DIR, build.PRISTINE_DIR):
+                target = self.root / base / "a.txt"
+                saved = target.read_bytes()
+                target.unlink()
+                target.symlink_to(outside)
+                with self.assertRaises(SystemExit, msg=base) as stop:
+                    build_into(data_spec({"a.txt": "y"}), self.root)
+                self.assertIn("symlink", str(stop.exception))
+                self.assertEqual(outside.read_text(encoding="utf-8"), "keep me")
+                target.unlink()
+                target.write_bytes(saved)
+
+    def test_rebuild_refuses_a_symlinked_data_folder(self):
+        with tempfile.TemporaryDirectory() as elsewhere:
+            build_into(data_spec({"a.txt": "x"}), self.root)
+            (self.root / build.DATA_DIR / "sub").symlink_to(elsewhere)
+            with self.assertRaises(SystemExit):
+                build_into(data_spec({"a.txt": "x", "sub/b.txt": "y"}), self.root)
+            self.assertEqual(list(pathlib.Path(elsewhere).iterdir()), [])
+
+    def test_rebuild_replaces_a_hard_link_instead_of_writing_through_it(self):
+        with tempfile.TemporaryDirectory(dir=self.root.parent) as elsewhere:
+            outside = pathlib.Path(elsewhere) / "precious.txt"
+            outside.write_text("keep me", encoding="utf-8")
+            build_into(data_spec({"a.txt": "x"}), self.root)
+            target = self.root / build.DATA_DIR / "a.txt"
+            target.unlink()
+            os.link(outside, target)
+            build_into(data_spec({"a.txt": "y"}), self.root)
+            self.assertEqual(outside.read_text(encoding="utf-8"), "keep me")
+            self.assertEqual(target.read_text(encoding="utf-8"), "y")
 
     def test_merge_rewrites_data(self):
         build_into(data_spec({"a.txt": "fresh"}), self.root)
@@ -365,6 +403,43 @@ class ServedFilesTest(unittest.TestCase):
             self.assertEqual(headers.get("content-security-policy"), "sandbox", path)
             self.assertEqual(headers.get("x-content-type-options"), "nosniff", path)
         self.assertNotIn("content-security-policy", self.server.headers_of("/"))
+
+    def outside_file(self) -> pathlib.Path:
+        outside = self.root.parent / "precious.txt"
+        outside.write_text("keep me", encoding="utf-8")
+        return outside
+
+    def test_reset_refuses_a_symlinked_target(self):
+        outside = self.outside_file()
+        self.data("plain.txt").unlink()
+        self.data("plain.txt").symlink_to(outside)
+        status, body = self.server.reset("files")
+        self.assertEqual(status, 409, body)
+        self.assertIn(b"plain.txt", body)
+        self.assertEqual(outside.read_text(encoding="utf-8"), "keep me")
+
+    def test_reset_refuses_a_symlinked_pristine_copy(self):
+        outside = self.outside_file()
+        pristine = self.root / build.PRISTINE_DIR / "plain.txt"
+        pristine.unlink()
+        pristine.symlink_to(outside)
+        self.assertEqual(self.server.reset("files")[0], 409)
+        self.assertNotEqual(self.data("plain.txt").read_text(encoding="utf-8"), "keep me")
+
+    def test_reset_replaces_a_hard_link_instead_of_writing_through_it(self):
+        outside = self.outside_file()
+        self.data("plain.txt").unlink()
+        os.link(outside, self.data("plain.txt"))
+        self.assertEqual(self.server.reset("files")[0], 200)
+        self.assertEqual(outside.read_text(encoding="utf-8"), "keep me")
+        self.assertEqual(self.data("plain.txt").read_text(encoding="utf-8"), "one\ntwo\n")
+
+    def test_peek_refuses_a_symlinked_managed_file(self):
+        outside = self.outside_file()
+        self.data("plain.txt").unlink()
+        self.data("plain.txt").symlink_to(outside)
+        status, body = self.server.peek("files", 0)
+        self.assertEqual(status, 409, body)
 
     def test_files_join_the_reveal_whitelist(self):
         # 404 = passed the whitelist and found nothing: no Finder opens in a test.
