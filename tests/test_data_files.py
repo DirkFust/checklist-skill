@@ -136,6 +136,42 @@ class DataBuildTest(unittest.TestCase):
     def test_file_and_folder_of_the_same_name_abort(self):
         self.aborts({"a": "x", "a/b": "y"})
 
+    def test_names_differing_only_in_case_abort(self):
+        # One file on a case-insensitive disk — the second write would land on the first.
+        for data in ({"A.txt": "x", "a.txt": "y"}, {"Sub/x": "x", "sub": "y"}):
+            self.assertIn("case", self.aborts(data), data)
+
+    def metadata(self) -> dict:
+        return {name: (self.root / name).read_bytes()
+                for name in ("template.html", "state.json", "setups.json")}
+
+    def test_clash_aborts_before_anything_is_written(self):
+        build_into(data_spec({"a.txt": "old"}), self.root)
+        before = self.metadata()
+        (self.root / build.DATA_DIR / "b.txt").mkdir()
+        (self.root / build.DATA_DIR / "b.txt" / "mine").write_text("x", encoding="utf-8")
+        spec = data_spec({"a.txt": "new", "b.txt": "y"})
+        spec["title"] = "Changed"
+        with self.assertRaises(SystemExit) as stop:
+            build_into(spec, self.root)
+        self.assertIn("b.txt", str(stop.exception))
+        self.assertEqual(self.metadata(), before)
+        self.assertEqual((self.root / build.DATA_DIR / "a.txt").read_text(encoding="utf-8"), "old")
+
+    def test_file_where_a_folder_goes_aborts(self):
+        build_into(data_spec({"a.txt": "old"}), self.root)
+        before = self.metadata()
+        (self.root / build.DATA_DIR / "sub").write_text("a script's", encoding="utf-8")
+        with self.assertRaises(SystemExit) as stop:
+            build_into(data_spec({"a.txt": "old", "sub/x.txt": "y"}), self.root)
+        self.assertIn("sub", str(stop.exception))
+        self.assertEqual(self.metadata(), before)
+
+    def test_file_and_folder_may_trade_places_between_builds(self):
+        build_into(data_spec({"a": "x"}), self.root)
+        self.assertEqual(self.built({"a/b": "y"}), {"a/b": b"y"})
+        self.assertEqual(self.built({"a": "z"}), {"a": b"z"})
+
     def test_data_must_be_an_object(self):
         self.aborts(["a.txt"], files=[])
 

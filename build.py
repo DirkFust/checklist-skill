@@ -14,7 +14,11 @@ Every build rewrites the test data, `--merge` included: what a round of testing
 did to it is not a result. Files an earlier build wrote that the spec no longer
 names go; anything else in `data/` (a script's output) stays. A file the build
 would write that is a symlink, or lies in a folder resolving elsewhere, aborts:
-the write would land on whatever the link points at. `--clean` removes
+the write would land on whatever the link points at. So does anything in the
+way (a folder where a file goes, or the reverse), checked before the first
+write, and two data names that differ only in case — one file on the Mac's
+disk. The data goes before template, state and setups, so a build that fails
+on the disk leaves those as they were. `--clean` removes
 `data/` and `.pristine/` whole and touches nothing else — state, images,
 setups and template stay.
 
@@ -489,6 +493,14 @@ def data_files(raw) -> dict:
     clash = sorted(folders & set(files))
     if clash:
         sys.exit(f"data: {', '.join(clash)} cannot be a file and a folder at once")
+    # The Mac's disk ignores case: `A.txt` and `a.txt` are one file there, and
+    # the second write would quietly replace the first.
+    seen = {}
+    for name in sorted(files) + sorted(folders - set(files)):
+        other = seen.setdefault(name.casefold(), name)
+        if other != name:
+            sys.exit(f"data: {other!r} and {name!r} differ only in case — one file on a "
+                     f"case-insensitive disk; rename one")
     return files
 
 
@@ -508,16 +520,22 @@ def write_data(folder: pathlib.Path, files: dict) -> None:
     A file the previous build wrote — it has a pristine copy — that `files` no
     longer names goes from both. Anything else in data/ stays: a script may have
     generated it, and it is not the build's to remove.
+
+    Every target is checked before the first file goes: a folder where a file
+    belongs, a file where a folder belongs, a symlink — any of them aborts with
+    nothing written, rather than an OSError halfway through.
     """
+    folder = folder.resolve()
     data, pristine = folder / DATA_DIR, folder / PRISTINE_DIR
-    targets = [(data_target(base, name), file.content)
-               for name, file in files.items() for base in (data, pristine)]
     built = [path.relative_to(pristine).as_posix()
              for path in pristine.rglob("*") if path.is_file()] if pristine.is_dir() else []
-    for name in built:
-        if name not in files:
-            for base in (data, pristine):
-                remove_built(folder, base, name)
+    gone = [name for name in built if name not in files]
+    leaving = {base / name for name in gone for base in (data, pristine)}
+    targets = [(data_target(base, name, leaving), file.content)
+               for name, file in files.items() for base in (data, pristine)]
+    for name in gone:
+        for base in (data, pristine):
+            remove_built(folder, base, name)
     for target, content in targets:
         target.parent.mkdir(parents=True, exist_ok=True)
         # A fresh file rather than a write into the old one: a hard link would
@@ -526,15 +544,28 @@ def write_data(folder: pathlib.Path, files: dict) -> None:
         target.write_bytes(content)
 
 
-def data_target(base: pathlib.Path, name: str) -> pathlib.Path:
+def data_target(base: pathlib.Path, name: str, leaving: set) -> pathlib.Path:
     """Where `name` goes under `base` (data/ or .pristine/) — aborting when that
     is a symlink, or a folder on the way resolves elsewhere: the write would
-    land on whatever the link points at."""
+    land on whatever the link points at. Aborting too when something else is
+    in the way; `leaving` is what an earlier build wrote and this one removes,
+    so a file and a folder of the same name may trade places between builds."""
     home = base.parent.resolve() / base.name
     target = home / name
     if home.is_symlink() or target.is_symlink() or not target.parent.resolve().is_relative_to(home):
         sys.exit(f"{target} is a symlink or leads out of {home} — the build will not write "
                  f"through it; remove the link and build again")
+    if target.is_dir():
+        inside = [path for path in target.rglob("*") if not path.is_dir()]
+        if not inside or not all(path in leaving for path in inside):
+            sys.exit(f"{target} is a folder, and data names a file there — move the folder "
+                     f"away or rename the file in the spec")
+    for parent in [target.parent, *target.parent.parents]:
+        if parent == home.parent:
+            break
+        if parent.exists() and not parent.is_dir() and parent not in leaving:
+            sys.exit(f"{parent} is a file, and data needs a folder there for {name} — move "
+                     f"the file away or rename the entry in the spec")
     return target
 
 
@@ -969,14 +1000,16 @@ def build(spec: dict, shell: str, faces: str, table: dict, lang: str,
         state = merge(state, previous)
     template = frame(shell, spec, faces, table, lang)
     folder.mkdir(parents=True, exist_ok=True)
+    # Every build, --merge included, puts the test data back as the spec says:
+    # whatever a previous round of testing did to it is not a result. First,
+    # because it is what can still fail on the disk: until it is through, the
+    # old template, state and setups stay as they were.
+    write_data(folder, data)
     (folder / "template.html").write_text(template, encoding="utf-8")
     (folder / "state.json").write_text(
         json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     (folder / SETUPS_FILE).write_text(
         json.dumps(frozen, ensure_ascii=False, indent=2), encoding="utf-8")
-    # Every build, --merge included, puts the test data back as the spec says:
-    # whatever a previous round of testing did to it is not a result.
-    write_data(folder, data)
     # A rebuild opens a fresh round of ticking, so an earlier read is spent —
     # otherwise a serve.py on this folder would time itself out on stale news.
     (folder / ".read").unlink(missing_ok=True)
