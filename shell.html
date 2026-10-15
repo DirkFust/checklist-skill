@@ -1,0 +1,1014 @@
+<title>%%TITLE%%</title>
+
+<!--
+  No <link> to a font CDN, and no other request that leaves this machine: the
+  faces live in `fonts.css` as woff2 and `build.py` inlines them into the head.
+  Keep it that way — a checklist carries screenshots of unreleased work.
+-->
+
+<!--
+  Checklist with an explicit save. `serve.py` drops the state into the state slot as
+  it serves the page; "Save" PUTs it back and the server writes it, images and all,
+  to disk. Colours and type may be tuned per subject — the percent slots and the
+  script below have to stay.
+
+  The visible text is English here. The page speaks the user's language: building
+  for someone who works in another one means translating this chrome along the way.
+-->
+
+<style>
+  :root {
+    --ground: #eef0f3; --surface: #fff; --sunk: #e4e8ed;
+    --ink: #14181c; --ink-soft: #4d565f; --ink-faint: #7c868f; --line: #cdd4dc;
+    --accent: #2f6fd0; --ok: #247050; --problem: #a83a24; --skipped: #6b7078;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #12161a; --surface: #1a1f25; --sunk: #232a31;
+      --ink: #e3e8ed; --ink-soft: #a3aeb8; --ink-faint: #79848e; --line: #303941;
+      --accent: #6ea3e8; --ok: #7fc0a3; --problem: #e08a72; --skipped: #8a929b;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #12161a; --surface: #1a1f25; --sunk: #232a31;
+    --ink: #e3e8ed; --ink-soft: #a3aeb8; --ink-faint: #79848e; --line: #303941;
+    --accent: #6ea3e8; --ok: #7fc0a3; --problem: #e08a72; --skipped: #8a929b;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--ground); color: var(--ink);
+    font-family: "Public Sans", ui-sans-serif, system-ui, sans-serif;
+    line-height: 1.55; margin: 0; padding: 40px 20px 120px;
+  }
+  .page { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 28px; }
+
+  .eyebrow {
+    font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 11px;
+    letter-spacing: .14em; text-transform: uppercase; color: var(--ink-faint);
+  }
+  h1 { font-size: clamp(28px, 5vw, 38px); line-height: 1.08; letter-spacing: -.02em;
+       text-wrap: balance; margin: 8px 0 0; }
+  .standfirst { color: var(--ink-soft); max-width: 62ch; margin: 10px 0 0; }
+
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 16px; font-size: 13px; color: var(--ink-soft);
+    border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 10px 0;
+  }
+  .legend code { font-family: "JetBrains Mono", ui-monospace, monospace; color: var(--ink); }
+
+  ol.items { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 18px; }
+
+  li.item {
+    background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--line);
+    border-radius: 3px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px;
+  }
+  li.item[data-state="ok"] { border-left-color: var(--ok); }
+  li.item[data-state="problem"] { border-left-color: var(--problem); }
+  li.item[data-state="skipped"] { border-left-color: var(--skipped); }
+
+  .row { display: flex; align-items: flex-start; gap: 12px; }
+
+  .mark {
+    flex: none; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 15px;
+    font-weight: 600; background: var(--sunk); color: var(--ink-soft);
+    border: 1px solid var(--line); border-radius: 3px; padding: 3px 8px; cursor: pointer;
+  }
+  .mark:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  li.item[data-state="ok"] .mark { color: var(--ok); border-color: var(--ok); }
+  li.item[data-state="problem"] .mark { color: var(--problem); border-color: var(--problem); }
+  li.item[data-state="skipped"] .mark { color: var(--skipped); border-color: var(--skipped); }
+
+  .title { flex: 1; font-size: 17px; font-weight: 600; text-wrap: balance; }
+  li.item[data-state="ok"] .title,
+  li.item[data-state="skipped"] .title { color: var(--ink-faint); }
+
+  /* An ordinal to point at — "take a look at number 4". Parked in the right-hand
+     corner so the card's indents (54px under the marker) stay untouched. */
+  .num {
+    flex: none; margin-top: 5px;
+    font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 12px;
+    font-variant-numeric: tabular-nums; letter-spacing: .06em; color: var(--ink-faint);
+  }
+
+  /* Folding is manual and nothing but a view: what a folded item still shows is
+     the trace of what is inside it — the note's first words, the image count. */
+  .hint {
+    flex: none; max-width: 38%; margin-top: 5px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--ink-faint);
+  }
+  .chev {
+    flex: none; margin-top: 3px; font: inherit; color: var(--ink-faint); background: none;
+    border: 1px solid transparent; border-radius: 3px; padding: 2px 4px; cursor: pointer;
+  }
+  .chev:hover { color: var(--accent); border-color: var(--line); }
+  .chev:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .chev svg { display: block; transition: transform .12s; }
+  li.item.folded .chev svg { transform: rotate(-90deg); }
+  li.item.folded { gap: 0; }
+  li.item.folded .setup,
+  li.item.folded .detail,
+  li.item.folded .note-wrap,
+  li.item.folded .shots,
+  li.item.folded .shotbar { display: none; }
+
+  .detail { margin: 0 0 0 54px; color: var(--ink-soft); font-size: 15px; max-width: 62ch; }
+  .detail p { margin: 0 0 6px; }
+
+  .note-wrap { margin-left: 54px; display: flex; align-items: baseline; gap: 8px; }
+  .arrow { color: var(--ink-faint); font-family: "JetBrains Mono", ui-monospace, monospace; }
+  .note {
+    flex: 1; min-height: 1.6em; border-bottom: 1px dashed var(--line);
+    font-size: 14.5px; color: var(--ink); outline: none;
+  }
+  .note:empty::before { content: attr(data-placeholder); color: var(--ink-faint); }
+  .note:focus { border-bottom-color: var(--accent); }
+
+  .shots { margin-left: 54px; display: flex; flex-wrap: wrap; gap: 10px; }
+  .shots:empty { display: none; }
+  .shot { position: relative; }
+  .shot img {
+    display: block; max-height: 120px; max-width: 220px;
+    border: 1px solid var(--line); border-radius: 3px; background: var(--sunk); cursor: zoom-in;
+  }
+  .shot .weight {
+    font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 10.5px;
+    color: var(--ink-faint); text-align: center; padding-top: 2px;
+  }
+  .shot .drop {
+    position: absolute; top: 3px; right: 3px; font: inherit; font-size: 12px; line-height: 1;
+    background: var(--surface); color: var(--ink-soft);
+    border: 1px solid var(--line); border-radius: 3px; padding: 2px 5px; cursor: pointer;
+  }
+  .shot .drop:hover { color: var(--problem); border-color: var(--problem); }
+
+  .shotbar { margin-left: 54px; }
+  .addshot {
+    font: inherit; font-size: 13px; color: var(--ink-soft); background: none;
+    border: 1px dashed var(--line); border-radius: 3px; padding: 4px 9px; cursor: pointer;
+  }
+  .addshot:hover { color: var(--accent); border-color: var(--accent); }
+  li.item.dragover, .notes.dragover { border-color: var(--accent); }
+
+  .notes {
+    background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--line);
+    border-radius: 3px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px;
+  }
+  .notes h2 {
+    margin: 0; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 11px;
+    font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-faint);
+  }
+  .notes .note { border-bottom: 0; min-height: 4.5em; white-space: pre-wrap; }
+  .notes .shots, .notes .shotbar { margin-left: 0; }
+
+  .lightbox {
+    position: fixed; inset: 0; z-index: 10; background: rgb(0 0 0 / .82);
+    display: flex; align-items: center; justify-content: center; padding: 24px; cursor: zoom-out;
+  }
+  .lightbox[hidden] { display: none; }
+  .lightbox img { max-width: 100%; max-height: 100%; border-radius: 3px; }
+
+  .whereis {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+    font-size: 13px; color: var(--ink-faint);
+  }
+  .whereis .cmdline { flex: 1; min-width: 260px; }
+
+  .savebar {
+    position: sticky; bottom: 0; margin-top: 4px;
+    display: flex; align-items: center; gap: 14px;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 3px;
+    padding: 12px 14px;
+  }
+  .save {
+    font: inherit; font-weight: 600; color: #fff; background: var(--accent);
+    border: 0; border-radius: 3px; padding: 8px 16px; cursor: pointer;
+  }
+  .save[disabled] { opacity: .5; cursor: default; }
+  .save:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+  .status { font-size: 14px; color: var(--ink-soft); }
+  .status[data-tone="dirty"] { color: var(--problem); }
+  .status[data-tone="saved"] { color: var(--ok); }
+
+  .rescue {
+    border: 1px solid var(--problem); border-radius: 3px; padding: 12px 14px;
+    display: flex; flex-direction: column; gap: 10px; background: var(--surface);
+  }
+  .rescue[hidden] { display: none; }
+  .rescue p { margin: 0; font-size: 14.5px; color: var(--ink-soft); max-width: 62ch; }
+  .rescue-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+  .rescue button {
+    font: inherit; font-size: 14px; color: var(--ink); background: var(--sunk);
+    border: 1px solid var(--line); border-radius: 3px; padding: 6px 12px; cursor: pointer;
+  }
+  .rescue button:hover { border-color: var(--accent); color: var(--accent); }
+  .rescue textarea {
+    font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 12px;
+    width: 100%; min-height: 8em; background: var(--sunk); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 3px; padding: 8px; resize: vertical;
+  }
+  .rescue textarea[hidden] { display: none; }
+  /* Nothing unsaved: then the block is a notice, not an alarm — and there is
+     nothing to rescue, so the two buttons have no business being there. */
+  .rescue[data-tone="calm"] { border-color: var(--line); }
+  .rescue[data-tone="calm"] .rescue-actions { display: none; }
+
+  /* Setup: what has to hold BEFORE the item. Deliberately unlike the check text
+     — folded away, cooler ground, an edge of its own. */
+  .setup {
+    margin-left: 54px; background: var(--sunk);
+    border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 3px;
+  }
+  .setup > summary {
+    cursor: pointer; padding: 7px 12px; list-style: none;
+    font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 11px; font-weight: 600;
+    letter-spacing: .12em; text-transform: uppercase; color: var(--accent);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .setup > summary::-webkit-details-marker { display: none; }
+  .setup > summary::before { content: "\25B8"; font-size: 10px; }
+  .setup[open] > summary::before { content: "\25BE"; }
+  .setup > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .setup-body { padding: 0 12px 12px; display: flex; flex-direction: column; gap: 9px; }
+  .setup-body p { margin: 0; font-size: 14.5px; color: var(--ink-soft); max-width: 62ch; }
+  .setup-links { display: flex; flex-wrap: wrap; gap: 8px; }
+  .setup-links a {
+    font-size: 13.5px; text-decoration: none; color: var(--accent);
+    border: 1px solid var(--accent); border-radius: 3px; padding: 5px 11px;
+  }
+  .setup-links a:hover { background: var(--accent); color: var(--surface); }
+  .setup-links a:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+
+  .setup-path { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .setup-path button {
+    font: inherit; font-size: 13.5px; color: var(--accent); background: none;
+    border: 1px solid var(--accent); border-radius: 3px; padding: 5px 11px; cursor: pointer;
+  }
+  .setup-path button:hover { background: var(--accent); color: var(--surface); }
+  .setup-path button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+  .setup-path code {
+    font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 12px;
+    color: var(--ink-faint); user-select: all;
+  }
+  .setup-path .said { font-size: 13px; color: var(--problem); }
+  .cmdline { display: flex; align-items: stretch; gap: 6px; }
+  .cmdline code {
+    flex: 1; min-width: 0; display: block;
+    font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 12.5px;
+    background: var(--sunk); border: 1px solid var(--line); border-radius: 3px;
+    padding: 8px 10px; overflow-x: auto; white-space: pre; user-select: all;
+  }
+  .cmdline button {
+    flex: none; font: inherit; color: var(--ink-soft); background: var(--surface);
+    border: 1px solid var(--line); border-radius: 3px; padding: 0 10px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .cmdline button:hover { color: var(--accent); border-color: var(--accent); }
+  .cmdline button svg { display: block; }
+  .cmdline button.done svg { display: none; }
+  .cmdline button.done { color: var(--ok); border-color: var(--ok); }
+  .cmdline button.done::after { content: "✓"; font-size: 14px; line-height: 1; }
+
+  kbd, code.inline {
+    font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 12.5px;
+    background: var(--sunk); border-radius: 3px; padding: 1.5px 5px; color: var(--ink);
+  }
+  /* Markdown scraps from the spec: bold, `code`, bullet lines. */
+  p.bullet { padding-left: 1.15em; text-indent: -1.15em; }
+  p.bullet::before { content: "\00b7\00a0"; color: var(--ink-faint); }
+  .detail strong, .setup-body strong, .standfirst strong { color: var(--ink); font-weight: 600; }
+
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<script type="application/json" id="state">%%STATE%%</script>
+
+<div class="page">
+  <header>
+    <div class="eyebrow" id="eyebrow"></div>
+    <h1 id="heading"></h1>
+    <p class="standfirst" id="standfirst"></p>
+  </header>
+
+  <div class="legend">
+    <span><code>[ ]</code> {{t.legend_open}}</span>
+    <span><code>[x]</code> {{t.legend_ok}}</span>
+    <span><code>[!]</code> {{t.legend_problem}}</span>
+    <span><code>[-]</code> {{t.legend_skipped}}</span>
+    <span>{{t.legend_marker}}</span>
+    <span>{{t.legend_number}}</span>
+    <span>{{t.legend_chevron}}</span>
+    <span>{{t.legend_autofold}}</span>
+    <span>{{t.legend_image}} <kbd>{{t.legend_image_key}}</kbd> {{t.legend_image_mid}} <code>{{t.add_image}}</code>{{t.legend_image_end}}</span>
+  </div>
+
+  <ol class="items" id="items"></ol>
+
+  <section class="notes" id="notes">
+    <h2>{{t.observations}}</h2>
+    <div class="note" id="notes-text" contenteditable="plaintext-only"
+         data-placeholder="{{t.observations_placeholder}}"></div>
+    <div class="shots" id="notes-shots"></div>
+    <div class="shotbar"><button class="addshot" type="button" id="notes-add">{{t.add_image}}</button></div>
+  </section>
+
+  <div class="rescue" id="rescue" hidden>
+    <p id="rescue-why"></p>
+    <p>{{t.restart}}</p>
+    <div class="cmdline">
+      <code id="rescue-cmd">%%RESTART%%</code>
+      <button type="button" id="rescue-cmd-copy" title="{{t.copy_command}}" aria-label="{{t.copy_command}}">
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none"
+             stroke="currentColor" stroke-width="1.4" stroke-linejoin="round">
+          <rect x="5.75" y="5.75" width="7.5" height="7.5" rx="1.5"></rect>
+          <path d="M10.25 3.5H4.25a1.5 1.5 0 0 0-1.5 1.5v6"></path>
+        </svg>
+      </button>
+    </div>
+    <div class="rescue-actions">
+      <button type="button" id="rescue-file">{{t.rescue_file}}</button>
+      <button type="button" id="rescue-copy">{{t.rescue_clipboard}}</button>
+      <span class="status" id="rescue-status"></span>
+    </div>
+    <textarea id="rescue-text" readonly hidden></textarea>
+  </div>
+
+  <div class="savebar">
+    <button class="save" id="save" type="button">{{t.save}}</button>
+    <span class="status" id="status"></span>
+  </div>
+
+  <footer class="whereis">
+    <span>{{t.results_live_in}}</span>
+    <div class="cmdline">
+      <code id="whereis">%%FOLDER%%</code>
+      <button type="button" id="whereis-copy" title="{{t.copy_path}}" aria-label="{{t.copy_path}}"></button>
+    </div>
+  </footer>
+</div>
+
+<div class="lightbox" id="lightbox" hidden><img alt=""></div>
+
+<script>
+  // The state is the JSON above; the page renders from it and saves only on a
+  // click — a PUT to serve.py, which writes it to disk, images and all. A reload
+  // fetches it back from the server. NO script here may carry the closing script
+  // tag as a literal, comments included: the parser ends right there.
+  const DOC = JSON.parse(document.getElementById("state").textContent);
+  DOC.notes = DOC.notes || { text: "", images: [] };
+  DOC.notes.images = DOC.notes.images || [];
+  DOC.items.forEach((it) => {
+    it.images = it.images || [];
+    it.collapsed = it.collapsed === true;
+  });
+  let dirty = false;
+
+  // A freshly pasted image is a data: URI and wears its weight as a label; once
+  // the server has written it, it is a path.
+  const bytesOf = (dataUrl) => {
+    const b64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
+    const pad = b64.endsWith("==") ? 2 : b64.endsWith("=") ? 1 : 0;
+    return Math.floor((b64.length * 3) / 4) - pad;
+  };
+  const human = (n) => (n >= 1048576
+    ? (n / 1048576).toFixed(1) + " MB"
+    : Math.round(n / 1024) + " KB").replace(".0 MB", " MB");
+  const asDataUrl = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error("unreadable"));
+    reader.readAsDataURL(file);
+  });
+
+  const imageFiles = (list) =>
+    Array.from(list || []).filter((f) => f && f.type && f.type.startsWith("image/"));
+
+  async function attach(bucket, container, files) {
+    const picked = imageFiles(files);
+    if (!picked.length) return;
+    // The original stays as it is — the server turns it into a file.
+    let failed = 0;
+    for (const f of picked) {
+      try { bucket.images.push(await asDataUrl(f)); } catch { failed++; }
+    }
+    renderShots(container, bucket);
+    markDirty();
+    if (failed) setStatus(failed + " {{t.images_unreadable}}", "dirty");
+  }
+
+  function renderShots(container, bucket) {
+    container.textContent = "";
+    bucket.images.forEach((src, n) => {
+      const fig = document.createElement("div");
+      fig.className = "shot";
+      const img = document.createElement("img");
+      img.src = src;
+      img.alt = "{{t.attachment}} " + (n + 1);
+      img.addEventListener("click", () => zoom(src));
+      const weight = document.createElement("div");
+      weight.className = "weight";
+      weight.textContent = src.startsWith("data:")
+        ? human(bytesOf(src))
+        : src.replace(/^.*\//, "");
+      const kill = document.createElement("button");
+      kill.className = "drop";
+      kill.type = "button";
+      kill.title = "{{t.remove_image}}";
+      kill.textContent = "×";
+      kill.addEventListener("click", () => {
+        bucket.images.splice(n, 1);
+        renderShots(container, bucket);
+        markDirty();
+      });
+      fig.append(img, weight, kill);
+      container.append(fig);
+    });
+  }
+
+  function pick(bucket, container) {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.multiple = true;
+    input.addEventListener("change", () => attach(bucket, container, input.files));
+    input.click();
+  }
+
+  function wirePaste(el, bucket, container) {
+    el.addEventListener("paste", (e) => {
+      const files = imageFiles(e.clipboardData && e.clipboardData.files);
+      if (!files.length) return;      // a plain-text paste stays untouched
+      e.preventDefault();
+      attach(bucket, container, files);
+    });
+  }
+
+  function wireDrop(zone, bucket, container) {
+    const hasFiles = (e) =>
+      Array.from((e.dataTransfer && e.dataTransfer.types) || []).includes("Files");
+    zone.addEventListener("dragover", (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      zone.classList.add("dragover");
+    });
+    zone.addEventListener("dragleave", (e) => {
+      if (e.target === zone) zone.classList.remove("dragover");
+    });
+    zone.addEventListener("drop", (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      zone.classList.remove("dragover");
+      attach(bucket, container, e.dataTransfer.files);
+    });
+  }
+
+  function zoom(src) {
+    const box = document.getElementById("lightbox");
+    box.querySelector("img").src = src;
+    box.hidden = false;
+  }
+
+  function initNotes() {
+    const text = document.getElementById("notes-text");
+    const shots = document.getElementById("notes-shots");
+    text.textContent = DOC.notes.text || "";
+    text.addEventListener("input", () => {
+      DOC.notes.text = text.textContent;
+      markDirty();
+    });
+    notesStrip = shots;
+    renderShots(shots, DOC.notes);
+    wirePaste(text, DOC.notes, shots);
+    wireDrop(document.getElementById("notes"), DOC.notes, shots);
+    document.getElementById("notes-add").addEventListener("click", () => pick(DOC.notes, shots));
+  }
+
+  const strips = [];
+  let notesStrip = null;
+
+  // Where the pointer rests. A fold that happens on its own has to hold the
+  // ground under it still, and the viewport middle is only a guess at that.
+  let pointerY = null;
+  addEventListener("mousemove", (e) => { pointerY = e.clientY; }, { passive: true });
+
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  const SAFE_URL = /^https?:\/\//i;
+
+  function copyIcon() {
+    const svg = document.createElementNS(SVG_NS, "svg");
+    for (const [key, value] of Object.entries({
+      viewBox: "0 0 16 16", width: "14", height: "14", fill: "none",
+      stroke: "currentColor", "stroke-width": "1.4", "stroke-linejoin": "round",
+      "aria-hidden": "true",
+    })) svg.setAttribute(key, value);
+    const rect = document.createElementNS(SVG_NS, "rect");
+    for (const [key, value] of Object.entries({
+      x: "5.75", y: "5.75", width: "7.5", height: "7.5", rx: "1.5",
+    })) rect.setAttribute(key, value);
+    const path = document.createElementNS(SVG_NS, "path");
+    path.setAttribute("d", "M10.25 3.5H4.25a1.5 1.5 0 0 0-1.5 1.5v6");
+    svg.append(rect, path);
+    return svg;
+  }
+
+  function chevronIcon() {
+    const svg = document.createElementNS(SVG_NS, "svg");
+    for (const [key, value] of Object.entries({
+      viewBox: "0 0 16 16", width: "13", height: "13", fill: "none",
+      stroke: "currentColor", "stroke-width": "1.6", "stroke-linecap": "round",
+      "stroke-linejoin": "round", "aria-hidden": "true",
+    })) svg.setAttribute(key, value);
+    const path = document.createElementNS(SVG_NS, "path");
+    path.setAttribute("d", "M4 6.5 8 10.5 12 6.5");
+    svg.append(path);
+    return svg;
+  }
+
+  // What a folded item still says about itself. Without this, folding would not
+  // tidy a note away, it would hide it.
+  const HINT_CUT = 60;
+
+  // A ticked item tidies itself away after a pause. `"autofold": false` in the
+  // spec turns that off for a list where it gets in the way.
+  const AUTOFOLD = DOC.meta.autofold !== false;
+  const AUTOFOLD_MS = 2000;
+
+  function traceOf(item) {
+    const bits = [];
+    const note = (item.note || "").trim().replace(/\s+/g, " ");
+    if (note) bits.push("\u21b3 " + (note.length > HINT_CUT
+      ? note.slice(0, HINT_CUT - 1) + "\u2026" : note));
+    const n = (item.images || []).length;
+    if (n) bits.push(n + (n === 1 ? " {{t.image_one}}" : " {{t.image_many}}"));
+    return bits.join("  \u00b7  ");
+  }
+
+  async function copyInto(btn, node) {
+    try {
+      await navigator.clipboard.writeText(node.textContent);
+    } catch {
+      // Clipboard blocked: then at least select it — Cmd-C does the rest.
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      const selection = getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return;
+    }
+    btn.classList.add("done");
+    setTimeout(() => btn.classList.remove("done"), 1500);
+  }
+
+  function commandLine(text) {
+    const row = document.createElement("div");
+    row.className = "cmdline";
+    const code = document.createElement("code");
+    code.textContent = text;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.title = "{{t.copy_command}}";
+    btn.setAttribute("aria-label", "{{t.copy_command}}");
+    btn.append(copyIcon());
+    btn.addEventListener("click", () => copyInto(btn, code));
+    row.append(code, btn);
+    return row;
+  }
+
+  // A file: link would be dead from an http page; the server does it instead.
+  function pathLine(entry) {
+    const row = document.createElement("div");
+    row.className = "setup-path";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = entry.label || "{{t.reveal_in_finder}}";
+    const said = document.createElement("span");
+    said.className = "said";
+    const where = document.createElement("code");
+    where.textContent = entry.show || entry.path;
+
+    btn.addEventListener("click", async () => {
+      said.textContent = "";
+      try {
+        const res = await fetch("reveal", {
+          method: "POST",
+          headers: { "content-type": "application/json", "X-Checklist": "reveal" },
+          body: JSON.stringify({ path: entry.path }),
+        });
+        if (!res.ok) said.textContent = await res.text();
+      } catch {
+        said.textContent = "{{t.server_not_answering}}";
+      }
+    });
+
+    row.append(btn, where, said);
+    return row;
+  }
+
+  // Check text, titles and setup arrive from the spec as markdown fragments. Only
+  // what anyone would write without thinking about it renders: **bold**, `code`,
+  // and lines that start with a bullet. Built as DOM, never via innerHTML — the
+  // text is foreign input, and a markup renderer would be no sanitizer.
+  const MARKUP = /`([^`\n]+)`|\*\*(.+?)\*\*/g;
+  const BULLET = /^\s*[-*\u00b7\u2022]\s+/;
+
+  function inlineMarkup(raw) {
+    const text = String(raw == null ? "" : raw);
+    const out = document.createDocumentFragment();
+    let done = 0;
+    for (const hit of text.matchAll(MARKUP)) {
+      out.append(text.slice(done, hit.index));
+      const isCode = hit[1] !== undefined;
+      const el = document.createElement(isCode ? "code" : "strong");
+      if (isCode) el.className = "inline";
+      el.textContent = isCode ? hit[1] : hit[2];
+      out.append(el);
+      done = hit.index + hit[0].length;
+    }
+    out.append(text.slice(done));
+    return out;
+  }
+
+  // One line per paragraph; blank lines separate instead of making an empty one.
+  function prose(raw, into) {
+    String(raw == null ? "" : raw).split("\n").forEach((line) => {
+      if (!line.trim()) return;
+      const p = document.createElement("p");
+      if (BULLET.test(line)) {
+        p.className = "bullet";
+        line = line.replace(BULLET, "");
+      }
+      p.append(inlineMarkup(line));
+      into.append(p);
+    });
+  }
+
+  // What has to hold before the item: which app, which server, which files. Open,
+  // because unread prerequisites are the costliest mistake in a checklist; whoever
+  // wants to quiet a long list down sets collapsed.
+  function setupBlock(setup) {
+    const box = document.createElement("details");
+    box.className = "setup";
+    box.open = setup.collapsed !== true;
+    const head = document.createElement("summary");
+    head.textContent = setup.label || "{{t.setup_default}}";
+    box.append(head);
+
+    const body = document.createElement("div");
+    body.className = "setup-body";
+    prose(setup.text, body);
+    (setup.commands || []).forEach((command) => body.append(commandLine(command)));
+    (setup.paths || []).forEach((entry) => body.append(pathLine(entry)));
+
+    const links = (setup.links || []).filter((link) => link && SAFE_URL.test(link.url || ""));
+    if (links.length) {
+      const row = document.createElement("div");
+      row.className = "setup-links";
+      links.forEach((link) => {
+        const anchor = document.createElement("a");
+        anchor.href = link.url;
+        anchor.textContent = link.label || link.url;
+        anchor.target = "_blank";
+        anchor.rel = "noopener noreferrer";
+        row.append(anchor);
+      });
+      body.append(row);
+    }
+    box.append(body);
+    return box;
+  }
+
+  const TOKEN = { open: "[ ]", ok: "[x]", problem: "[!]", skipped: "[-]" };
+  const NEXT = { open: "ok", ok: "problem", problem: "skipped", skipped: "open" };
+
+  function render() {
+    document.getElementById("eyebrow").textContent = DOC.meta.eyebrow || "";
+    document.getElementById("heading").textContent = DOC.meta.heading || "";
+    const standfirst = document.getElementById("standfirst");
+    standfirst.textContent = "";
+    standfirst.append(inlineMarkup(DOC.meta.standfirst));
+
+    const list = document.getElementById("items");
+    list.textContent = "";
+    DOC.items.forEach((item, i) => {
+      const li = document.createElement("li");
+      li.className = "item";
+      li.dataset.state = item.state || "open";
+
+      const row = document.createElement("div");
+      row.className = "row";
+      const btn = document.createElement("button");
+      btn.className = "mark";
+      btn.type = "button";
+      btn.setAttribute("aria-label", "{{t.toggle_state}}");
+      btn.textContent = TOKEN[li.dataset.state];
+      btn.addEventListener("click", () => {
+        const s = NEXT[DOC.items[i].state || "open"];
+        DOC.items[i].state = s;
+        li.dataset.state = s;
+        btn.textContent = TOKEN[s];
+        // [!] wants a note written into it, so it always opens the item back up.
+        if (s === "problem" && DOC.items[i].collapsed) fold(false);
+        if (s === "ok") arm(); else disarm();
+        markDirty();
+      });
+      const title = document.createElement("span");
+      title.className = "title";
+      title.append(inlineMarkup(item.title));
+      const num = document.createElement("span");
+      num.className = "num";
+      const total = String(DOC.items.length);
+      num.textContent = `${String(i + 1).padStart(Math.max(2, total.length), "0")} / ${total.padStart(2, "0")}`;
+      const hint = document.createElement("span");
+      hint.className = "hint";
+      const chev = document.createElement("button");
+      chev.className = "chev";
+      chev.type = "button";
+      chev.title = "{{t.fold_item}}";
+      chev.setAttribute("aria-label", "{{t.fold_item}}");
+      chev.append(chevronIcon());
+
+      // Folding is a view, not a result: it does not raise the unsaved warning,
+      // it rides along with the next save.
+      function fold(on) {
+        DOC.items[i].collapsed = on;
+        li.classList.toggle("folded", on);
+        chev.setAttribute("aria-expanded", String(!on));
+        hint.textContent = on ? traceOf(DOC.items[i]) : "";
+      }
+
+      // Folding takes height out of the page, and everything below jumps up by
+      // that much — the next item included, so the click meant for it lands on
+      // the one after. Scrolling by the same amount holds that ground still.
+      // Only for the fold that happens on its own: folding by hand needs the
+      // opposite, because there the pointer is on the item's own head line, and
+      // that stays put precisely when nothing scrolls.
+      function foldStill() {
+        const before = li.getBoundingClientRect();
+        fold(true);
+        const delta = li.getBoundingClientRect().height - before.height;
+        const anchor = pointerY === null ? innerHeight / 2 : pointerY;
+        if (delta && before.bottom <= anchor) {
+          scrollBy({ top: delta, behavior: "instant" });
+        }
+      }
+
+      // The timer only arms the fold — mouse and caret have the last word.
+      // Folding away what somebody is pointing at or typing into is exactly the
+      // jolt this is meant to spare, so while either is on the item the fold
+      // waits for them to leave. Any further click on the marker disarms it, and
+      // that is what keeps the way to [!] and [-] open.
+      let armed = null;
+      let waiting = false;
+
+      function disarm() {
+        clearTimeout(armed);
+        armed = null;
+        waiting = false;
+      }
+
+      // Only a field somebody can type into counts as busy. The marker button
+      // takes the focus on its own click, so counting any focus inside the item
+      // would leave every ticked one waiting for a click somewhere else.
+      function busy() {
+        const focused = document.activeElement;
+        return li.matches(":hover")
+          || (focused !== null && li.contains(focused) && focused.isContentEditable);
+      }
+
+      function foldWhenFree() {
+        waiting = false;
+        if (DOC.items[i].state !== "ok" || DOC.items[i].collapsed) return;
+        if (busy()) {
+          waiting = true;
+          return;
+        }
+        foldStill();
+      }
+
+      function arm() {
+        disarm();
+        if (AUTOFOLD) armed = setTimeout(foldWhenFree, AUTOFOLD_MS);
+      }
+
+      li.addEventListener("mouseleave", () => { if (waiting) foldWhenFree(); });
+      // On focusout the old field is still the activeElement — check a tick later.
+      li.addEventListener("focusout", () => { if (waiting) setTimeout(foldWhenFree, 0); });
+
+      chev.addEventListener("click", () => {
+        disarm();
+        fold(!DOC.items[i].collapsed);
+      });
+
+      row.append(btn, title, hint, num, chev);
+      li.append(row);
+
+      if (item.setup) li.append(setupBlock(item.setup));
+
+      if (item.detail) {
+        const d = document.createElement("div");
+        d.className = "detail";
+        prose(item.detail, d);
+        li.append(d);
+      }
+
+      const wrap = document.createElement("div");
+      wrap.className = "note-wrap";
+      const arrow = document.createElement("span");
+      arrow.className = "arrow";
+      arrow.textContent = "↳";
+      const note = document.createElement("div");
+      note.className = "note";
+      note.contentEditable = "plaintext-only";
+      note.dataset.placeholder = "{{t.note_placeholder}}";
+      note.textContent = item.note || "";
+      note.addEventListener("input", () => {
+        DOC.items[i].note = note.textContent.trim();
+        markDirty();
+      });
+      wrap.append(arrow, note);
+      li.append(wrap);
+
+      const shots = document.createElement("div");
+      shots.className = "shots";
+      strips[i] = shots;
+      li.append(shots);
+      renderShots(shots, item);
+
+      const bar = document.createElement("div");
+      bar.className = "shotbar";
+      const add = document.createElement("button");
+      add.className = "addshot";
+      add.type = "button";
+      add.textContent = "{{t.add_image}}";
+      add.addEventListener("click", () => pick(item, shots));
+      bar.append(add);
+      li.append(bar);
+
+      wirePaste(note, item, shots);
+      wireDrop(li, item, shots);
+
+      fold(item.collapsed === true);
+      list.append(li);
+    });
+  }
+
+  function setStatus(text, tone) {
+    const el = document.getElementById("status");
+    el.textContent = text;
+    if (tone) el.dataset.tone = tone; else el.removeAttribute("data-tone");
+  }
+
+  function markDirty() {
+    dirty = true;
+    setStatus("{{t.unsaved}}", "dirty");
+  }
+
+  // The server writes fresh attachments as files and hands the state back with
+  // paths instead of data: URIs. Redraw only the strips — a full render() would
+  // throw the caret out of a note field somebody is typing into.
+  function adopt(saved) {
+    (saved.items || []).forEach((item, i) => {
+      if (!DOC.items[i]) return;
+      DOC.items[i].images = item.images || [];
+      if (strips[i]) renderShots(strips[i], DOC.items[i]);
+    });
+    DOC.notes.images = (saved.notes || {}).images || [];
+    if (notesStrip) renderShots(notesStrip, DOC.notes);
+  }
+
+  // If serve.py dies mid-session, the state is stuck in the browser. The page
+  // cannot start a process — so it at least hands the state out, and says so as
+  // soon as the server answers again.
+  const stateText = () => JSON.stringify(DOC, null, 2);
+  const stateBytes = () => new TextEncoder().encode(stateText()).length;
+
+  // With unsaved changes this is an emergency — the state exists nowhere else.
+  // Without them it is a notice: the server timed out, everything is on disk.
+  function showRescue(why) {
+    const box = document.getElementById("rescue");
+    box.dataset.tone = dirty ? "alarm" : "calm";
+    document.getElementById("rescue-why").textContent = dirty
+      ? why + " {{t.rescue_state_here_lead}}" + human(stateBytes()) +
+        "{{t.rescue_state_here_tail}}"
+      : why + " {{t.rescue_all_saved}}";
+    box.hidden = false;
+  }
+
+  function hideRescue() {
+    document.getElementById("rescue").hidden = true;
+    document.getElementById("rescue-text").hidden = true;
+    document.getElementById("rescue-status").textContent = "";
+  }
+
+  // The outage should show before anyone presses Save in vain.
+  let serverUp = true;
+  let misses = 0;
+  let quiet = 0;
+
+  async function heartbeat() {
+    // A backgrounded tab knocks too, only rarely: the knock is what tells the
+    // server somebody still has this open, and silence is what ends it.
+    if (document.hidden && ++quiet % 6) return;
+    quiet = 0;
+    let up = true;
+    try {
+      await fetch("./", { method: "HEAD", cache: "no-store" });
+    } catch {
+      up = false;
+    }
+    if (!up) {
+      if (++misses < 2) return;       // a single miss is not an outage
+      if (!serverUp) return;
+      serverUp = false;
+      setStatus("{{t.server_stopped}}", "dirty");
+      showRescue("{{t.server_gone}}");
+      return;
+    }
+    misses = 0;
+    if (serverUp) return;
+    serverUp = true;
+    // Saving works again — that settles the rescue block.
+    hideRescue();
+    setStatus(dirty ? "{{t.server_back_dirty}}" : "{{t.server_back}}", "saved");
+  }
+
+  function rescueToFile() {
+    const url = URL.createObjectURL(new Blob([stateText()], { type: "application/json" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "state.json";
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    document.getElementById("rescue-status").textContent = "{{t.rescue_saved}}";
+  }
+
+  async function rescueToClipboard() {
+    const note = document.getElementById("rescue-status");
+    const text = stateText();
+    try {
+      await navigator.clipboard.writeText(text);
+      note.textContent = stateBytes() > 100 * 1024
+        ? "{{t.copied_big_lead}} " + human(stateBytes()) + "{{t.copied_big_tail}}"
+        : "{{t.copied}}";
+    } catch {
+      // Clipboard refused: then lay it out to be selected by hand.
+      const area = document.getElementById("rescue-text");
+      area.value = text;
+      area.hidden = false;
+      area.focus();
+      area.select();
+      note.textContent = "{{t.clipboard_blocked}}";
+    }
+  }
+
+  async function save() {
+    const btn = document.getElementById("save");
+    btn.disabled = true;
+    setStatus("{{t.saving}}");
+    try {
+      const res = await fetch("state", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(DOC),
+      });
+      if (!res.ok) throw new Error("HTTP " + res.status + " {{t.http_error_tail}}");
+      adopt(await res.json());
+      dirty = false;
+      hideRescue();
+      setStatus("{{t.saved}}", "saved");
+    } catch (e) {
+      const why = (e && e.message) || "{{t.unknown_error}}";
+      setStatus("{{t.save_failed}} " + why, "dirty");
+      showRescue("{{t.save_failed}} " + why + ".");
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  document.getElementById("save").addEventListener("click", save);
+  document.getElementById("rescue-cmd-copy").addEventListener("click", function () {
+    copyInto(this, document.getElementById("rescue-cmd"));
+  });
+  // After a /clear only the page itself still knows where its results live.
+  const whereisCopy = document.getElementById("whereis-copy");
+  whereisCopy.append(copyIcon());
+  whereisCopy.addEventListener("click", function () {
+    copyInto(this, document.getElementById("whereis"));
+  });
+  document.getElementById("rescue-file").addEventListener("click", rescueToFile);
+  document.getElementById("rescue-copy").addEventListener("click", rescueToClipboard);
+  addEventListener("beforeunload", (e) => { if (dirty) e.preventDefault(); });
+
+  document.getElementById("lightbox").addEventListener("click", (e) => {
+    e.currentTarget.hidden = true;
+    e.currentTarget.querySelector("img").removeAttribute("src");
+  });
+  addEventListener("keydown", (e) => {
+    if (e.key === "Escape") document.getElementById("lightbox").hidden = true;
+  });
+
+  render();
+  initNotes();
+  setStatus("");
+  setInterval(heartbeat, 5000);
+</script>
