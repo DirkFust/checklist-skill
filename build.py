@@ -958,8 +958,8 @@ def state_items(raw_items: list, named: dict | None,
 def warn_split_setups(items: list, resolved_setups: dict) -> None:
     """Items with the same setup belong together: one after the other, the
     page folds the repeat to `same as`, and ▶ can skip the build. Equal by
-    content, so two equal inline setups count as one. Only a warning — a real
-    dependency may force the order."""
+    resolved content, so setups that resolve alike count as one even under
+    two ids. Only a warning — a real dependency may force the order."""
     runs: dict[str, list] = {}
     previous = None
     for number, item in enumerate(items, 1):

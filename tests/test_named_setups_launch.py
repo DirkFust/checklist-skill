@@ -94,7 +94,7 @@ class NamedSetupTest(unittest.TestCase):
         self.assertIn("app", warning)
 
     def test_equal_inline_setups_split_apart_warn(self):
-        # Same content under two ids is the same setup to whoever ticks it.
+        # Written alike, all three share item-01 — and still sit apart.
         spec = named_spec()
         spec["items"][0]["setup"] = {"text": "Inline."}
         spec["items"][1]["setup"] = None
