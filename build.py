@@ -31,11 +31,12 @@ Setups are frozen here, not carried in the state. The state is what the page
 writes back, and a setup names paths the server will reveal and commands it
 will run — so the page must not be able to change them. `state.json` items carry
 only a setup id (`item-NN` for an inline setup, 1-based, shared by later ones
-written exactly alike; the name for a named one); `setups.json` holds the resolved setup per id under `setups`, and under
-`source` what the spec gave — `inline` setups by id, `setups`, `launch`,
-`launches` and `data` as written — so `read.py --as-spec` can hand it back to
-this script unchanged. A setup's `files` are frozen resolved as well: name,
-absolute path, whether the build manages it, and a declared encoding.
+written exactly alike; the name for a named one); `setups.json` holds the
+resolved setup per id under `setups`, and under `source` what the spec gave —
+`inline` setups by id, `setups`, `launch`, `launches` and `data` as written —
+so `read.py --as-spec` can hand it back to this script unchanged. A setup's
+`files` are frozen resolved as well: name, absolute path, whether the build
+manages it, and a declared encoding.
 
 Project config: `checklist.json`, the first one found walking up from the
 folder's parent; the walk stops at a directory with `.git` (inclusive) or at
