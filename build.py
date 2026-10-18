@@ -166,8 +166,17 @@ import stat
 import sys
 import urllib.parse
 
-from workfolder import (BOMS, DATA_DIR, DEFAULT_ENCODING, PRISTINE_DIR, READ_MARK, SEGMENT_RE,
-                        SETUPS_FILE, contained, replace_file)
+from workfolder import (
+    BOMS,
+    DATA_DIR,
+    DEFAULT_ENCODING,
+    PRISTINE_DIR,
+    READ_MARK,
+    SEGMENT_RE,
+    SETUPS_FILE,
+    contained,
+    replace_file,
+)
 
 STATES = {"open", "ok", "problem", "skipped"}
 PROJECT_CONFIG = "checklist.json"

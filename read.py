@@ -202,7 +202,7 @@ def skipped_lines(items: list) -> list[str]:
     The marker exists so nobody has to answer for these twice. Spelling that
     out here beats hoping the tokens in the list are read as an instruction.
     """
-    settled = ["{:02d}".format(n) for n, item in enumerate(items, 1)
+    settled = [f"{n:02d}" for n, item in enumerate(items, 1)
                if item.get("state") == "skipped"]
     if not settled:
         return []

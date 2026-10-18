@@ -5,6 +5,7 @@ import tempfile
 import unittest
 
 import helpers  # noqa: F401 — puts the skill folder on sys.path
+
 import workfolder
 
 

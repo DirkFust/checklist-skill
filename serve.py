@@ -120,10 +120,19 @@ import traceback
 import urllib.parse
 import webbrowser
 
-from workfolder import (BOMS, DATA_DIR, DEFAULT_ENCODING, PRISTINE_DIR, READ_MARK, SEGMENT_RE,
-                        SETUPS_FILE, contained, replace_file)
+from workfolder import (
+    BOMS,
+    DATA_DIR,
+    DEFAULT_ENCODING,
+    PRISTINE_DIR,
+    READ_MARK,
+    SEGMENT_RE,
+    SETUPS_FILE,
+    contained,
+    replace_file,
+)
 
-DATA_RE = re.compile(r"^data:(?P<mime>image/[a-z0-9.+-]+);base64,(?P<payload>.*)$", re.S)
+DATA_RE = re.compile(r"^data:(?P<mime>image/[a-z0-9.+-]+);base64,(?P<payload>.*)$", re.DOTALL)
 # Only self-made names get swept — whatever a human puts beside them stays.
 OWNED_RE = re.compile(r"^[0-9a-f]{12}\.[a-z0-9]+$")
 # Attachments land in `images/`, browsable test data in `data/`. The German names
@@ -703,15 +712,15 @@ class Launcher:
             self.steps(run, launch)
         except (OSError, Stopping) as error:     # a cwd that is gone, a full disk
             self.set(run, FAILED, str(error))
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 — the worker's last line, see below
             # Anything else is a bug — but a worker that dies of it leaves the
             # phase where it was, and the page polls `waiting` forever. Failed,
             # with the traceback in the log, is something a human can act on.
             self.set(run, FAILED, f"{type(error).__name__}: {error}")
             # Into the log the tail reads from, so the page shows it.
-            with contextlib.suppress(OSError):
-                with self.stretch(run)[0].open("a", encoding="utf-8") as log:
-                    log.write(traceback.format_exc())
+            with (contextlib.suppress(OSError),
+                  self.stretch(run)[0].open("a", encoding="utf-8") as log):
+                log.write(traceback.format_exc())
         finally:
             with self.lock:
                 self.busy = False

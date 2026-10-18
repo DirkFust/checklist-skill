@@ -54,7 +54,7 @@ def faces(css: str) -> list[str]:
             continue
         url = re.search(r"src:\s*url\((https://[^)]+)\)", block).group(1)
         uri = "data:font/woff2;base64," + base64.b64encode(fetch(url)).decode("ascii")
-        fields = [line.strip() for line in re.search(r"\{(.*)\}", block, re.S).group(1)
+        fields = [line.strip() for line in re.search(r"\{(.*)\}", block, re.DOTALL).group(1)
                   .strip().splitlines() if line.strip()]
         fields = [field.replace(url, uri) for field in fields]
         out.append("@font-face {\n" + "\n".join("  " + field for field in fields) + "\n}")

@@ -18,8 +18,8 @@ SKILL_ROOT = pathlib.Path(__file__).resolve().parent.parent
 if str(SKILL_ROOT) not in sys.path:
     sys.path.insert(0, str(SKILL_ROOT))
 
-import build  # noqa: E402
-import serve  # noqa: E402
+import build
+import serve
 
 LANG = "en"
 # Port 0 lets the OS pick a free one, so tests never fight a running checklist.
@@ -27,7 +27,7 @@ EPHEMERAL_PORT = 0
 # shutdown() waits for serve_forever's next poll; the default half second, paid
 # by every test that starts a server, was most of the suite's run time.
 SERVE_POLL = 0.05
-STATE_RE = re.compile(r'<script type="application/json" id="state">(.*?)</script>', re.S)
+STATE_RE = re.compile(r'<script type="application/json" id="state">(.*?)</script>', re.DOTALL)
 
 
 def sample_spec() -> dict:

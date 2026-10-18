@@ -6,6 +6,7 @@ import os
 import pathlib
 import tempfile
 import unittest
+from typing import ClassVar
 from unittest import mock
 
 from helpers import Folder, build, build_into, read_json, run_quietly, sample_spec, stderr_of
@@ -247,8 +248,8 @@ class LaunchTest(unittest.TestCase):
 class ProfileTest(unittest.TestCase):
     """Named launch profiles: more than one way to start the same project."""
 
-    PROJECT_LAUNCHES = {"diff": {"run": "open -a Diff", "build": "make app"},
-                        "editor": {"run": "open -a Editor"}}
+    PROJECT_LAUNCHES: ClassVar[dict] = {"diff": {"run": "open -a Diff", "build": "make app"},
+                                        "editor": {"run": "open -a Editor"}}
 
     def setUp(self):
         temp = self.enterContext(tempfile.TemporaryDirectory())

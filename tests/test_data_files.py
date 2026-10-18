@@ -12,8 +12,16 @@ import sys
 import tempfile
 import unittest
 
-from helpers import (SKILL_ROOT, Folder, RunningServer, build, build_into, read_json,
-                     run_quietly, serve)
+from helpers import (
+    SKILL_ROOT,
+    Folder,
+    RunningServer,
+    build,
+    build_into,
+    read_json,
+    run_quietly,
+    serve,
+)
 
 import read
 
@@ -58,7 +66,7 @@ class DataBuildTest(unittest.TestCase):
 
     def test_string_is_utf8_verbatim(self):
         self.assertEqual(self.built({"a.txt": "grüß\nno end"}),
-                         {"a.txt": "grüß\nno end".encode("utf-8")})
+                         {"a.txt": "grüß\nno end".encode()})
 
     def test_subfolders(self):
         self.assertEqual(self.built({"case-1/in.txt": "x"}), {"case-1/in.txt": b"x"})
@@ -352,7 +360,7 @@ class CleanTest(unittest.TestCase):
 
     def test_clean_from_the_command_line(self):
         done = subprocess.run([sys.executable, str(SKILL_ROOT / "build.py"), "--clean",
-                               str(self.root)], capture_output=True, text=True)
+                               str(self.root)], check=False, capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertFalse((self.root / build.DATA_DIR).exists())
         self.assertTrue((self.root / "state.json").is_file())

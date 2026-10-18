@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 import unittest
+from typing import ClassVar
 
 from helpers import SERVE_POLL, SKILL_ROOT, Folder, RunningServer, build, build_into, serve
 
@@ -69,7 +70,7 @@ class QuietHandler(http.server.BaseHTTPRequestHandler):
 
 
 class LaunchTest(unittest.TestCase):
-    LAUNCHES = {}
+    LAUNCHES: ClassVar[dict] = {}
 
     def setUp(self):
         self.folder = Folder()
@@ -110,7 +111,7 @@ class LaunchTest(unittest.TestCase):
 
 
 class StepsTest(LaunchTest):
-    LAUNCHES = {
+    LAUNCHES: ClassVar[dict] = {
         "ok": {"quit": "echo quitting; exit 4", "build": "echo building", "run": "echo started"},
         "broken": {"build": "echo first; echo compile error >&2; exit 2", "run": "echo never"},
         "crash": {"run": "echo boom; exit 3"},
@@ -252,7 +253,7 @@ class SkipBuildTest(LaunchTest):
     """A build only runs again when the sources it would build from changed —
     a long build per item is what made ▶ slow."""
     COUNTED = "echo built >> builds.txt; test ! -f break-build"
-    LAUNCHES = {
+    LAUNCHES: ClassVar[dict] = {
         "app": {"build": COUNTED, "run": "true"},
         "other": {"build": "echo other >> builds.txt", "run": "true"},
     }
@@ -322,7 +323,7 @@ class SkipBuildTest(LaunchTest):
 
 
 class GroupTest(LaunchTest):
-    LAUNCHES = {
+    LAUNCHES: ClassVar[dict] = {
         # The shell leaves a child behind: only killing the group reaches it.
         "family": {"run": "sleep 30 & echo $! > child.pid; wait"},
         "detached": {"run": "sleep 30 > /dev/null 2>&1 & echo $! > detached.pid"},
@@ -396,7 +397,7 @@ class UrlTest(LaunchTest):
 
 
 class UnexpectedErrorTest(LaunchTest):
-    LAUNCHES = {"ready": {"run": "sleep 30", "url": "http://127.0.0.1:1/"}}
+    LAUNCHES: ClassVar[dict] = {"ready": {"run": "sleep 30", "url": "http://127.0.0.1:1/"}}
 
     def setUp(self):
         super().setUp()
@@ -421,7 +422,7 @@ class SignalTest(unittest.TestCase):
     """serve.py as a process: a terminal that goes away (SIGHUP) or an
     impatient second signal must still take what ▶ started down with it."""
 
-    SPEC = {"title": "Signals", "setups": {"stubborn": {"label": "x", "launch": {
+    SPEC: ClassVar[dict] = {"title": "Signals", "setups": {"stubborn": {"label": "x", "launch": {
         # Ignores SIGTERM, so shutting it down takes the whole kill grace.
         "run": "trap '' TERM; echo $$ > stubborn.pid; while :; do sleep 0.1; done"}}},
         "items": [{"title": "A", "setup": "stubborn"}]}
