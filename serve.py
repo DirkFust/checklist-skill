@@ -39,7 +39,9 @@ A setup with a frozen `launch` can be started from the page (▶), again from
 
   · `POST /launch {"setup": id}` → 202 `{"phase"}`; the steps run in a thread:
     `build` (15 min, non-zero fails — and leaves whatever runs untouched,
-    which the message then says) →
+    which the message then says; skipped when the server's last build was
+    this one, it succeeded, and no file git does not ignore has changed
+    since — outside a repository it always runs) →
     end the run an earlier ▶ of this server started (SIGTERM to its process
     group, SIGKILL after 3 s) → `quit` (30 s, a failure is logged, not fatal)
     → `run`, detached into a process group of its own. Exited 0 within 3 s: `done` (an app that handed itself over).
@@ -165,6 +167,9 @@ QUIT_TIMEOUT = 30
 # Python already turns into KeyboardInterrupt.
 STOP_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
 BUILD_TIMEOUT = 15 * 60
+# The git calls that tell whether a build can be skipped — a repository too
+# slow to answer gets built instead.
+GIT_TIMEOUT = 10
 # A run that ends this quickly either detached itself (an app that hands over to
 # launchd and exits 0) or failed to start; one still alive is a server.
 SETTLE_SECONDS = 3
@@ -493,6 +498,49 @@ def end_group(process: subprocess.Popen, grace: float) -> bool:
     return True
 
 
+def git_output(cwd: str, *args: str) -> bytes | None:
+    """What a git command printed; None if it failed, or there is no git."""
+    try:
+        done = subprocess.run(["git", *args], cwd=cwd, stdin=subprocess.DEVNULL,
+                              capture_output=True, timeout=GIT_TIMEOUT, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return done.stdout if done.returncode == 0 else None
+
+
+def source_fingerprint(cwd: str, working_folder: pathlib.Path) -> str | None:
+    """What a build in `cwd` builds from, as one hash: every file of the
+    repository git does not ignore, tracked or not, by path, size and mtime.
+    Stat'ed here rather than asked of `git status`, whose index cache misses
+    an edit of the same size within the same second. Ignored files — build
+    output, as a rule — do not count, nor does the working folder, which ▶
+    writes its logs into. None outside a repository: there nothing can tell
+    that the sources stayed the same."""
+    top = git_output(cwd, "rev-parse", "--show-toplevel")
+    if top is None:
+        return None
+    top_path = pathlib.Path(os.fsdecode(top.strip())).resolve()
+    pathspec = [":(top)"]     # the whole repository — `:(top).` matches nothing
+    with contextlib.suppress(ValueError):
+        inside = working_folder.resolve().relative_to(top_path)
+        pathspec.append(f":(top,exclude){inside}")
+    listing = git_output(cwd, "ls-files", "-z", "--cached", "--others", "--exclude-standard",
+                         "--", *pathspec)
+    if listing is None:
+        return None
+    digest = hashlib.sha256()
+    # Paths come relative to cwd; a file deleted but still in the index
+    # stats as missing, the same each time.
+    for path in filter(None, listing.split(b"\0")):
+        digest.update(path + b"\0")
+        try:
+            stat = (pathlib.Path(cwd) / os.fsdecode(path)).stat()
+            digest.update(f"{stat.st_size}:{stat.st_mtime_ns}\0".encode())
+        except OSError:
+            digest.update(b"-\0")
+    return digest.hexdigest()
+
+
 class Stopping(Exception):
     """The server is going down: no further step may start."""
 
@@ -527,6 +575,8 @@ class Launcher:
     def __init__(self, root: pathlib.Path, opener=open_url, quit_timeout: float = QUIT_TIMEOUT,
                  build_timeout: float = BUILD_TIMEOUT, settle: float = SETTLE_SECONDS,
                  kill_grace: float = KILL_GRACE, poll: float = READY_POLL, probe=answers):
+        self.root = root
+        self.root = root
         self.log, self.run_log = root / LAUNCH_LOG, root / LAUNCH_RUN_LOG
         self.opener, self.probe = opener, probe
         self.quit_timeout, self.build_timeout = quit_timeout, build_timeout
@@ -537,6 +587,9 @@ class Launcher:
         self.busy = False
         self.step_process: subprocess.Popen | None = None   # a quit or build under way
         self.live: Launch | None = None                     # whose run is ours
+        # (command, cwd, fingerprint) of the last build that succeeded. Only the
+        # worker touches it, and there is one worker at a time.
+        self.last_build: tuple | None = None
 
     def start(self, setup_id: str, launch: dict) -> str | None:
         """Start a launch; None if one is under way (or the server is stopping)."""
@@ -692,10 +745,18 @@ class Launcher:
         self.open_when_ready(run, process, launch["ready_timeout"])
 
     def built(self, run: Launch, command: str, cwd: str) -> bool:
-        """Run the build; False — with the launch marked failed — if it did not
-        succeed."""
+        """Run the build unless the last one was this very build and the
+        sources have not moved since; False — with the launch marked failed —
+        if it did not succeed."""
+        if self.up_to_date(command, cwd):
+            self.header(run, "build", "skipped, nothing changed since the last build")
+            return True
+        self.last_build = None
         failure = self.step(run, "build", command, cwd, self.build_timeout)
         if not failure:
+            # Taken after the build, so output it leaves unignored counts as
+            # part of what it built.
+            self.last_build = (command, cwd, source_fingerprint(cwd, self.root))
             return True
         # Said, because the old instance may be this very setup's: its
         # `running` has just given way to this launch's status.
@@ -703,6 +764,15 @@ class Launcher:
             failure += " — the running instance was left as it was"
         self.set(run, FAILED, failure)
         return False
+
+    def up_to_date(self, command: str, cwd: str) -> bool:
+        """Whether the last build was `command` in `cwd` and git sees nothing
+        that changed since. Another build in between may have written the same
+        output, so it has to be the very last one."""
+        if self.last_build is None or self.last_build[:2] != (command, cwd):
+            return False
+        fingerprint = self.last_build[2]
+        return fingerprint is not None and fingerprint == source_fingerprint(cwd, self.root)
 
     def open_when_ready(self, run: Launch, process: subprocess.Popen, timeout: float) -> None:
         """Wait for the run's url to answer, then open it in the browser."""

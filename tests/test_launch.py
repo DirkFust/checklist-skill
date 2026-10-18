@@ -248,6 +248,79 @@ class StepsTest(LaunchTest):
         self.assertFalse((self.root / serve.LAUNCH_LOG).exists())
 
 
+class SkipBuildTest(LaunchTest):
+    """A build only runs again when the sources it would build from changed —
+    a long build per item is what made ▶ slow."""
+    COUNTED = "echo built >> builds.txt; test ! -f break-build"
+    LAUNCHES = {
+        "app": {"build": COUNTED, "run": "true"},
+        "other": {"build": "echo other >> builds.txt", "run": "true"},
+    }
+
+    def setUp(self):
+        super().setUp()
+        self.project = self.root.parent
+        (self.project / "source.txt").write_text("v1\n")
+        self.git("init", "-q")
+        self.git("add", "source.txt")
+        self.git("commit", "-q", "-m", "init")
+
+    def git(self, *args: str) -> None:
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                       cwd=self.project, check=True, capture_output=True)
+
+    def builds(self) -> int:
+        path = self.project / "builds.txt"
+        return len(path.read_text().splitlines()) if path.exists() else 0
+
+    def test_unchanged_sources_skip_the_build(self):
+        self.assertEqual(self.launched("app")["phase"], "done")
+        self.assertEqual(self.launched("app")["phase"], "done")
+        self.assertEqual(self.builds(), 1)
+        log = (self.root / serve.LAUNCH_LOG).read_text(encoding="utf-8")
+        self.assertRegex(log, r"\d\d:\d\d:\d\d app build: skipped")
+
+    def test_an_edited_file_builds_again(self):
+        self.launched("app")
+        (self.project / "source.txt").write_text("v2\n")
+        self.launched("app")
+        self.assertEqual(self.builds(), 2)
+
+    def test_a_new_file_builds_again(self):
+        self.launched("app")
+        (self.project / "added.txt").write_text("new\n")
+        self.launched("app")
+        self.assertEqual(self.builds(), 2)
+
+    def test_a_commit_builds_again(self):
+        self.launched("app")
+        (self.project / "source.txt").write_text("v2\n")
+        self.git("commit", "-q", "-am", "next")
+        self.launched("app")
+        # Edit and commit leave the tree clean again — HEAD is what moved.
+        self.assertEqual(self.builds(), 2)
+
+    def test_a_failed_build_is_not_remembered(self):
+        (self.project / "break-build").touch()
+        self.assertEqual(self.launched("app")["phase"], "failed")
+        (self.project / "break-build").unlink()
+        self.assertEqual(self.launched("app")["phase"], "done")
+        self.assertEqual(self.builds(), 2)
+
+    def test_another_build_in_between_builds_again(self):
+        # Both may write the same output; what is on disk is the other's.
+        self.launched("app")
+        self.launched("other")
+        self.launched("app")
+        self.assertEqual(self.builds(), 3)
+
+    def test_outside_a_repository_every_press_builds(self):
+        subprocess.run(["rm", "-rf", str(self.project / ".git")], check=True)
+        self.launched("app")
+        self.launched("app")
+        self.assertEqual(self.builds(), 2)
+
+
 class GroupTest(LaunchTest):
     LAUNCHES = {
         # The shell leaves a child behind: only killing the group reaches it.

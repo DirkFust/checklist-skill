@@ -103,7 +103,13 @@ right for a one-off.
 
 A setup with a `launch` gets a ▶ button, so the human does not copy build commands out of the
 page. A press runs **build → stop → quit → run**: `build` first — if it fails, the page shows
-the output tail and whatever was running keeps running (the message says so); then the run an
+the output tail and whatever was running keeps running (the message says so). **The build
+runs only when it has to:** the server remembers its last successful build, and a press of
+the same build in the same `cwd` skips it while no file git does not ignore has changed —
+so the first ▶ builds and the next items start straight away, until a fix lands. Outside a
+git repository, after a failed build, or after a different build in between, it builds
+again; `launch.log` says `build: skipped` when it did not. Inputs git ignores (a `.env`)
+are not watched — restarting `serve.py` forces the next build. Then the run an
 earlier ▶ of this server started goes down, its whole process group; `quit` for an app outside that group (a
 failure is passed by, it may not have been running); `run`, detached — exited 0 within 3 s is
 *done* (an app that handed itself over), alive is *running*. With a `url` it waits until that
@@ -323,6 +329,7 @@ server; no button brings the server itself back.
 | `"{files}"` or `'{data}'` — a placeholder wrapped in quotes | They are quoted already; the extra pair turns all files into one argument or splits a path with a space |
 | `{file}` or any other typo in braces in a launch command | The build aborts — only `{files}` and `{data}` exist; a word in shell braces needs spaces |
 | A one-off profile put into `checklist.json` | Every checklist of the project sees it; a profile for one list belongs in the spec's `launches` |
+| A build that reads a file git ignores, which then changes | ▶ skips the build and starts the old one — restart `serve.py` to force it |
 | A dev server started with ▶, then the checklist server idles out | The dev server goes down with it — restart `serve.py` and press ▶ again |
 | A secret in a launch command | Frozen into `setups.json`, echoed into `launch.log` / `launch-run.log` |
 | A long path in body text instead of `paths` or `links` | They have to hunt for it by hand when a button would have done |
