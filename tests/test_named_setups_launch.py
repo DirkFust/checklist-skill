@@ -101,6 +101,23 @@ class NamedSetupTest(unittest.TestCase):
         warning = stderr_of(lambda: self.document(spec))
         self.assertIn("01, 03, 04", warning)
 
+    def test_equal_inline_setups_share_the_first_id(self):
+        # One id is what lets the page fold the repeat to `same as`.
+        spec = named_spec()
+        spec["items"][3]["setup"] = {"text": "Inline."}
+        state, frozen = self.document(spec)
+        self.assertEqual([item["setup"] for item in state["items"]],
+                         ["app", "app", "item-03", "item-03"])
+        self.assertEqual(frozen["source"]["inline"], {"item-03": {"text": "Inline."}})
+        self.assertEqual([item.get("setup") for item in read.as_spec(state, frozen)["items"]],
+                         ["app", "app", {"text": "Inline."}, {"text": "Inline."}])
+
+    def test_inline_setups_written_differently_keep_their_own_ids(self):
+        spec = named_spec()
+        spec["items"][3]["setup"] = {"text": "Inline.", "label": "Other"}
+        state, _ = self.document(spec)
+        self.assertEqual(state["items"][3]["setup"], "item-04")
+
     def test_unused_named_setup_stays_out_of_resolved(self):
         spec = named_spec()
         spec["setups"]["spare"] = {"paths": ["/tmp/spare"]}

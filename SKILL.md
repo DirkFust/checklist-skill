@@ -97,7 +97,8 @@ it once (`"app": {…}`), an item says `"setup": "app"`. Write the name on **eve
 needs it, not only where it changes: an item whose setup equals the one of the item before
 folds the block to one line, `<label> · same as 03`, by itself — the repeat costs the reader
 nothing, and an item reached out of order still says what has to hold. An inline object stays
-right for a one-off.
+right for a one-off; one written exactly like an earlier inline setup shares its id and folds
+as well — a safety net, not a reason to skip the name.
 
 **Items with the same setup stand together.** Same files, same app, same server: one block of
 items, not one at 03 and the next at 09 with something else in between. Together, the repeat

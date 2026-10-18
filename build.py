@@ -30,8 +30,8 @@ the old items nothing claimed; `--force` overwrites.
 Setups are frozen here, not carried in the state. The state is what the page
 writes back, and a setup names paths the server will reveal and commands it
 will run — so the page must not be able to change them. `state.json` items carry
-only a setup id (`item-NN` for an inline setup, 1-based; the name for a named
-one); `setups.json` holds the resolved setup per id under `setups`, and under
+only a setup id (`item-NN` for an inline setup, 1-based, shared by later ones
+written exactly alike; the name for a named one); `setups.json` holds the resolved setup per id under `setups`, and under
 `source` what the spec gave — `inline` setups by id, `setups`, `launch`,
 `launches` and `data` as written — so `read.py --as-spec` can hand it back to
 this script unchanged. A setup's `files` are frozen resolved as well: name,
@@ -912,9 +912,12 @@ def document(spec: dict, folder: pathlib.Path, lang: str = DEFAULT_LANG,
 def state_items(raw_items: list, named: dict | None,
                 base: LaunchBase) -> tuple[list, dict, dict]:
     """The spec's items as the state holds them, plus the setups they use:
-    resolved by id, and — for the inline ones — as the spec wrote them."""
+    resolved by id, and — for the inline ones — as the spec wrote them. An
+    inline setup written exactly like an earlier one takes that one's id, so
+    the page folds it to `same as` just like a repeated named setup."""
     items = []
     resolved_setups, inline_sources = {}, {}
+    inline_ids: dict[str, str] = {}
     for number, raw in enumerate(raw_items, 1):
         only(raw, ITEM_KEYS, f"item {number}")
         if not raw.get("title"):
@@ -925,9 +928,11 @@ def state_items(raw_items: list, named: dict | None,
                      f"allowed: {', '.join(sorted(STATES))}")
         setup_id, setup = item_setup(raw.get("setup"), number, named, base)
         if setup is not None:
-            resolved_setups[setup_id] = setup
             if named is None or setup_id not in named:
+                written = json.dumps(raw["setup"], sort_keys=True)
+                setup_id = inline_ids.setdefault(written, setup_id)
                 inline_sources[setup_id] = raw["setup"]
+            resolved_setups[setup_id] = setup
         items.append({
             "title": raw["title"],
             "detail": raw.get("detail", ""),
