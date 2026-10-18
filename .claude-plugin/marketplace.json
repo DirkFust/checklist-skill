@@ -1,0 +1,14 @@
+{
+  "name": "checklist-skill",
+  "description": "The checklist skill for Claude Code, as a plugin.",
+  "owner": {
+    "name": "Dirk Fust"
+  },
+  "plugins": [
+    {
+      "name": "checklist",
+      "source": "./plugins/checklist",
+      "description": "Tickable checklist pages for manual tests, whose ticks, flags and notes Claude reads back afterwards."
+    }
+  ]
+}

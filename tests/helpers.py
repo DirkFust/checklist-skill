@@ -1,7 +1,7 @@
 """Shared fixtures: build a spec into a temp folder, run serve.py in-process.
 
-The scripts live in the skill root, not in a package, so the root goes on
-sys.path here — every test module imports this first.
+The scripts live in the skill folder inside the plugin, not in a package, so
+that folder goes on sys.path here — every test module imports this first.
 """
 
 import contextlib
@@ -14,7 +14,8 @@ import sys
 import tempfile
 import threading
 
-SKILL_ROOT = pathlib.Path(__file__).resolve().parent.parent
+REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+SKILL_ROOT = REPO_ROOT / "plugins" / "checklist" / "skills" / "checklist"
 if str(SKILL_ROOT) not in sys.path:
     sys.path.insert(0, str(SKILL_ROOT))
 

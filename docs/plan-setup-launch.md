@@ -7,7 +7,7 @@ files) and a web project (`npm run dev`, wait for the URL, open it) must both fi
 without special cases.
 
 Context: no tests existed before this plan. Every slice adds stdlib `unittest`
-tests under `tests/` (`python3 -m unittest discover -s tests` from the skill
+tests under `tests/` (`python3 -m unittest discover -s tests` from the repo
 root). No third-party dependencies. Each slice ends with the full suite green and
 one conventional commit in this folder's git repo.
 

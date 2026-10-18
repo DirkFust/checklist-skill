@@ -1,1 +1,4 @@
 line-length = 100
+# The scripts import each other from the skill folder. `tests` stays out on
+# purpose: helpers has to sort before them, it puts that folder on sys.path.
+src = ["plugins/checklist/skills/checklist"]

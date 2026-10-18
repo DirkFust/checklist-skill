@@ -48,9 +48,9 @@ good — pick a different handover form, don't bend this one.
 2. Write the spec (the format is documented at the top of `build.py`), then build and serve:
 
        FOLDER=~/dev/project/.manual-tests/2026-08-26-smoke
-       python3 ~/.claude/skills/checklist/build.py spec.json $FOLDER
-       python3 ~/.claude/skills/checklist/serve.py $FOLDER --open
-       python3 ~/.claude/skills/checklist/read.py  $FOLDER   # later, to read it back
+       python3 ${CLAUDE_PLUGIN_ROOT}/skills/checklist/build.py spec.json $FOLDER
+       python3 ${CLAUDE_PLUGIN_ROOT}/skills/checklist/serve.py $FOLDER --open
+       python3 ${CLAUDE_PLUGIN_ROOT}/skills/checklist/read.py  $FOLDER   # later, to read it back
 
    `build.py` rejects unknown keys — a field the page does not know aborts the build instead
    of quietly disappearing. The note on an item is called `note` (singular); `notes` exists
@@ -265,7 +265,7 @@ is your own pre-fill). The reason for the script: reach into the JSON yourself a
 `notes` instead of `note`, and no error comes back, an empty answer does — and that reads like
 "no notes". That is exactly how comments went missing twice.
 
-    python3 ~/.claude/skills/checklist/read.py ~/dev/project/.manual-tests/2026-08-26-smoke
+    python3 ${CLAUDE_PLUGIN_ROOT}/skills/checklist/read.py ~/dev/project/.manual-tests/2026-08-26-smoke
 
 Images sit as files beside it; `read.py` names the absolute paths — **open them with `Read`**,
 otherwise you do not know what is on them. An unopened image is not a finding. `--json` prints
@@ -292,9 +292,9 @@ a list they have started:
 - **A rewrite that keeps everything**, reworded items included: let `read.py` convert, edit,
   then overwrite — the spec itself carries ticks, notes, setups, data and `lang`:
 
-      python3 ~/.claude/skills/checklist/read.py <folder> --as-spec > spec.json
+      python3 ${CLAUDE_PLUGIN_ROOT}/skills/checklist/read.py <folder> --as-spec > spec.json
       # edit spec.json — add, reword, reorder
-      python3 ~/.claude/skills/checklist/build.py spec.json <folder> --force
+      python3 ${CLAUDE_PLUGIN_ROOT}/skills/checklist/build.py spec.json <folder> --force
 
 **Rebuild into the same folder** either way: the images are carried over as paths, and the
 files they name live there. Copying the raw `--json` output into a spec by hand does not
