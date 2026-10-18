@@ -959,7 +959,8 @@ def warn_split_setups(items: list, resolved_setups: dict) -> None:
     """Items with the same setup belong together: one after the other, the
     page folds the repeat to `same as`, and ▶ can skip the build. Equal by
     resolved content, so setups that resolve alike count as one even under
-    two ids. Only a warning — a real dependency may force the order."""
+    two ids. Only a warning — a real dependency may force the order. Together
+    under two ids still warns: the page folds by id, so it shows both."""
     runs: dict[str, list] = {}
     previous = None
     for number, item in enumerate(items, 1):
@@ -969,12 +970,15 @@ def warn_split_setups(items: list, resolved_setups: dict) -> None:
             runs.setdefault(key, []).append((number, setup_id, key != previous))
         previous = key
     for uses in runs.values():
-        if sum(starts for _, _, starts in uses) < 2:
-            continue
         numbers = ", ".join(f"{number:02d}" for number, _, _ in uses)
-        names = ", ".join(dict.fromkeys(setup_id for _, setup_id, _ in uses))
-        print(f"warning: setup {names} is split up — items {numbers}; put them one after "
-              "another unless a dependency forces the order", file=sys.stderr)
+        ids = list(dict.fromkeys(setup_id for _, setup_id, _ in uses))
+        names = ", ".join(ids)
+        if sum(starts for _, _, starts in uses) >= 2:
+            print(f"warning: setup {names} is split up — items {numbers}; put them one after "
+                  "another unless a dependency forces the order", file=sys.stderr)
+        elif len(ids) > 1:
+            print(f"warning: setups {names} are the same — items {numbers}; give them one "
+                  "name so the page folds the repeat", file=sys.stderr)
 
 
 def meta_of(spec: dict, lang: str) -> dict:

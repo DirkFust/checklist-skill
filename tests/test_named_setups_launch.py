@@ -102,6 +102,23 @@ class NamedSetupTest(unittest.TestCase):
         warning = stderr_of(lambda: self.document(spec))
         self.assertIn("01, 03, 04", warning)
 
+    def test_a_setup_resolving_alike_under_another_id_counts_when_split(self):
+        spec = named_spec()
+        spec["items"][2]["setup"] = copy.deepcopy(spec["setups"]["app"])
+        spec["items"][1]["setup"] = None
+        warning = stderr_of(lambda: self.document(spec))
+        self.assertIn("split up", warning)
+        self.assertIn("01, 03", warning)
+        self.assertIn("app, item-03", warning)
+
+    def test_adjacent_setups_resolving_alike_under_two_ids_warn(self):
+        # Together but under two ids: ▶ skips the build, the page shows both.
+        spec = named_spec()
+        spec["items"][2]["setup"] = copy.deepcopy(spec["setups"]["app"])
+        warning = stderr_of(lambda: self.document(spec))
+        self.assertIn("01, 02, 03", warning)
+        self.assertIn("one name", warning)
+
     def test_equal_inline_setups_share_the_first_id(self):
         # One id is what lets the page fold the repeat to `same as`.
         spec = named_spec()

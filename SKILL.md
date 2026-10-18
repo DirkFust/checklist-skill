@@ -104,7 +104,9 @@ as well — a safety net, not a reason to skip the name.
 items, not one at 03 and the next at 09 with something else in between. Together, the repeat
 folds and ▶ skips the build; split up, the human sets the same thing up twice and waits for a
 second build. Only a real dependency splits a group. `build.py` warns about a split setup
-(equal by content, inline ones too) — read the warning and reorder, don't wave it through.
+(equal by content, inline ones too) — read the warning and reorder, don't wave it through. It
+also warns when the same setup stands together under two ids, say `app` and an inline copy of
+it: the page folds by id, so give them the one name.
 
 ## Starting it: ▶
 
