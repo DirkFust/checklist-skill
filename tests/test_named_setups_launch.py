@@ -82,6 +82,25 @@ class NamedSetupTest(unittest.TestCase):
         warning = stderr_of(lambda: self.document(spec))
         self.assertIn("spare", warning)
 
+    def test_contiguous_setups_do_not_warn(self):
+        self.assertEqual(stderr_of(lambda: self.document(named_spec())), "")
+
+    def test_a_split_named_setup_warns_with_its_items(self):
+        spec = named_spec()
+        spec["items"][1], spec["items"][2] = spec["items"][2], spec["items"][1]
+        warning = stderr_of(lambda: self.document(spec))
+        self.assertIn("01, 03", warning)
+        self.assertIn("app", warning)
+
+    def test_equal_inline_setups_split_apart_warn(self):
+        # Same content under two ids is the same setup to whoever ticks it.
+        spec = named_spec()
+        spec["items"][0]["setup"] = {"text": "Inline."}
+        spec["items"][1]["setup"] = None
+        spec["items"][3]["setup"] = {"text": "Inline."}
+        warning = stderr_of(lambda: self.document(spec))
+        self.assertIn("01, 03, 04", warning)
+
     def test_unused_named_setup_stays_out_of_resolved(self):
         spec = named_spec()
         spec["setups"]["spare"] = {"paths": ["/tmp/spare"]}

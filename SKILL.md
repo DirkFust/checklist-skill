@@ -99,6 +99,12 @@ folds the block to one line, `<label> · same as 03`, by itself — the repeat c
 nothing, and an item reached out of order still says what has to hold. An inline object stays
 right for a one-off.
 
+**Items with the same setup stand together.** Same files, same app, same server: one block of
+items, not one at 03 and the next at 09 with something else in between. Together, the repeat
+folds and ▶ skips the build; split up, the human sets the same thing up twice and waits for a
+second build. Only a real dependency splits a group. `build.py` warns about a split setup
+(equal by content, inline ones too) — read the warning and reorder, don't wave it through.
+
 ## Starting it: ▶
 
 A setup with a `launch` gets a ▶ button, so the human does not copy build commands out of the
@@ -321,6 +327,7 @@ server; no button brings the server itself back.
 | Generic steps ("test the feature") | The user cannot tell when something counts as passed |
 | Prerequisites written into the check text instead of `setup` | The item reads like an instruction and the deviation goes unnoticed |
 | `label` left as "Setup" although the item differs | Nobody can see that something else applies here |
+| Items with the same setup scattered across the list | The same setup twice, a second build on ▶, no `same as` fold — group them; `build.py` warns |
 | A named setup written only on the first item of a run | An item reached out of order lacks its prerequisites; write the name on each — the repeat folds itself |
 | `"setups": {}` left in a spec that uses the short text form | Every string `setup` turns into a reference to a name that does not exist, and the build aborts |
 | File-creating commands handed to the user to paste | Busywork; put the files into `data`, or run a script yourself before handing over |

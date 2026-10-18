@@ -893,6 +893,7 @@ def document(spec: dict, folder: pathlib.Path, lang: str = DEFAULT_LANG,
                       merged_profiles(project.launches, spec_profiles), data)
     named = named_setups(spec.get("setups"), base)
     items, resolved_setups, inline_sources = state_items(spec["items"], named, base)
+    warn_split_setups(items, resolved_setups)
     state = {"meta": meta_of(spec, lang), "items": items, "notes": notes_of(spec)}
     if named is not None:
         unused = [name for name in named if name not in resolved_setups]
@@ -937,6 +938,28 @@ def state_items(raw_items: list, named: dict | None,
             "images": images_of(raw, f"item {number}"),
         })
     return items, resolved_setups, inline_sources
+
+
+def warn_split_setups(items: list, resolved_setups: dict) -> None:
+    """Items with the same setup belong together: one after the other, the
+    page folds the repeat to `same as`, and ▶ can skip the build. Equal by
+    content, so two equal inline setups count as one. Only a warning — a real
+    dependency may force the order."""
+    runs: dict[str, list] = {}
+    previous = None
+    for number, item in enumerate(items, 1):
+        setup_id = item["setup"]
+        key = None if setup_id is None else json.dumps(resolved_setups[setup_id], sort_keys=True)
+        if key is not None:
+            runs.setdefault(key, []).append((number, setup_id, key != previous))
+        previous = key
+    for uses in runs.values():
+        if sum(starts for _, _, starts in uses) < 2:
+            continue
+        numbers = ", ".join(f"{number:02d}" for number, _, _ in uses)
+        names = ", ".join(dict.fromkeys(setup_id for _, setup_id, _ in uses))
+        print(f"warning: setup {names} is split up — items {numbers}; put them one after "
+              "another unless a dependency forces the order", file=sys.stderr)
 
 
 def meta_of(spec: dict, lang: str) -> dict:
