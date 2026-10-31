@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Serves a local checklist and takes its state back.
 
-    serve.py folder [--port 8765] [--open]
+    serve.py folder [--port 8790] [--open]
 
 The folder comes from `build.py spec.json folder` and holds `template.html` and
 `state.json`. On every request the server fills the state into the template; the
@@ -150,6 +150,9 @@ MAX_POST_BODY = 64 * 1024
 # tabs of the same checklist can overwrite each other's ticks between the read
 # and the write.
 LOCK = threading.RLock()
+# Off the common local app ports (8000, 8080, 8765, …): a checklist that grabs the
+# port of the app it tests blocks that app's own start.
+DEFAULT_PORT = 8790
 PORT_TRIES = 20
 # A preview, not a viewer: enough to see what a test file looks like.
 PEEK_LINES = 400
@@ -1222,7 +1225,7 @@ def watchdog(server: Server, root: pathlib.Path, pulse: Pulse,
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("folder")
-    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--open", action="store_true", help="open the browser right away")
     parser.add_argument("--idle", type=int, default=15, metavar="MIN",
                         help="stop after this long without a request (0 = never)")
